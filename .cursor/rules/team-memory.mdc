@@ -30,3 +30,9 @@ Build a **Dutch-Book Arb bot** for the **Polymarket** predictive markets platfor
 - Prefer provable or strongly bounded arbitrage over speculative directional bets.
 - Account for fees, slippage, partial fills, latency, and capital lock-up before trading.
 - Log decisions and post-trade verification so the verifier role can audit every execution.
+
+# Git Workflow
+
+- **Always push directly to `main`.** Do not create feature branches or open PRs unless explicitly instructed otherwise.
+- Commit and push changes to `origin/main` as work is completed.
+- The Hermes Agent codebase lives at `hermes-agent/` (cloned from https://github.com/nousresearch/hermes-agent).
