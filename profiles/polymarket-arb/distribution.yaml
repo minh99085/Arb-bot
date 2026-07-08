@@ -1,0 +1,16 @@
+name: polymarket-arb
+version: 0.1.0
+description: "Dutch-book arbitrage scanner and trader for all Polymarket markets"
+hermes_requires: ">=0.18.0"
+author: Arb-bot
+license: MIT
+
+env_requires:
+  - name: ARB_MIN_EDGE_BPS
+    description: "Minimum edge in basis points (default 50)"
+    required: false
+    default: "50"
+  - name: POLYMARKET_PRIVATE_KEY
+    description: "Wallet private key for live CLOB trading (optional)"
+    required: false
+    default: ""

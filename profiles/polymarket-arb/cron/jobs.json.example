@@ -1,0 +1,12 @@
+[
+  {
+    "id": "polymarket-dutch-book-scan",
+    "name": "Polymarket Dutch-book scan",
+    "schedule": "every 5m",
+    "no_agent": true,
+    "script": "scan_dutch_book.py",
+    "enabled": true,
+    "deliver": "telegram",
+    "description": "Scan all active Polymarket markets for Dutch-book violations and alert on stdout."
+  }
+]

@@ -1,0 +1,16 @@
+# Profile config for Polymarket arb operator.
+# Copy to ~/.hermes/profiles/polymarket-arb/config.yaml on install.
+
+model:
+  provider: openai
+  name: gpt-4.1-mini
+
+tools:
+  terminal: true
+  cronjob: true
+  skills: true
+
+skills:
+  enabled:
+    - polymarket
+    - polymarket-arb
