@@ -35,4 +35,4 @@ Build a **Dutch-Book Arb bot** for the **Polymarket** predictive markets platfor
 
 - **Always push directly to `main`.** Do not create feature branches or open PRs unless explicitly instructed otherwise.
 - Commit and push changes to `origin/main` as work is completed.
-- The Hermes Agent codebase lives at `hermes-agent/` (cloned from https://github.com/nousresearch/hermes-agent).
+- This repository is based on [Hermes Agent](https://github.com/nousresearch/hermes-agent) at the repo root (not in a subfolder).
