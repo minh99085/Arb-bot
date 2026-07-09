@@ -74,6 +74,17 @@ python -m arb approve <proposal_id>
 python -m arb proposals --env-snippet   # copy into .env yourself
 ```
 
+## Phase 5 — 24/7 standalone worker
+
+```bash
+python -m arb worker once --jobs scan,reconcile
+python -m arb worker run                 # daemon
+python -m arb worker status
+```
+
+Deploy templates: `deploy/systemd/`, `deploy/cron/`, `deploy/github-actions/`.
+Hermes is optional for alert delivery only — not on the hot path.
+
 Hot path is deterministic: scan → verify → WS re-verify → risk → paper fill → reconcile.
 Learning path proposes only; humans approve. Live CLOB still gated.
 
@@ -91,6 +102,8 @@ python -m arb loop --paper --ws
 python -m arb watch --scan-first --seconds 20
 python -m arb postmortem --days 7
 python -m arb proposals
+python -m arb worker once --jobs scan
+python -m arb worker status
 ```
 
 Cron script-only (no LLM):

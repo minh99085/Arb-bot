@@ -1,0 +1,18 @@
+# Crontab template for hosts without systemd (or as a complement).
+# Install: crontab -e  then paste (adjust paths).
+#
+# SHELL=/bin/bash
+# PATH=/usr/bin:/usr/local/bin
+# ARB_STATE_DIR=/var/lib/polymarket-arb
+#
+# Fast scan every 5 minutes (study/alert)
+*/5 * * * * cd /opt/Arb-bot && /usr/bin/python3 -m arb worker once --jobs scan >> /var/log/polymarket-arb-scan.log 2>&1
+#
+# Paper money loop every 15 minutes
+*/15 * * * * cd /opt/Arb-bot && /usr/bin/python3 -m arb worker once --jobs loop >> /var/log/polymarket-arb-loop.log 2>&1
+#
+# Reconcile hourly
+5 * * * * cd /opt/Arb-bot && /usr/bin/python3 -m arb worker once --jobs reconcile >> /var/log/polymarket-arb-reconcile.log 2>&1
+#
+# Daily postmortem 06:00 UTC
+0 6 * * * cd /opt/Arb-bot && /usr/bin/python3 -m arb worker once --jobs postmortem >> /var/log/polymarket-arb-postmortem.log 2>&1

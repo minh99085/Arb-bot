@@ -1,0 +1,22 @@
+[Unit]
+Description=Polymarket Dutch-book arb worker (Phase 5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User/WorkingDirectory/EnvironmentFile for your host
+User=ubuntu
+WorkingDirectory=/opt/Arb-bot
+EnvironmentFile=-/opt/Arb-bot/arb/worker.env
+EnvironmentFile=-/home/ubuntu/.hermes/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m arb worker run
+Restart=on-failure
+RestartSec=10
+# Hard caps — worker should fail closed, not thrash forever
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=multi-user.target

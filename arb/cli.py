@@ -457,10 +457,68 @@ def cmd_reject(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_worker(args: argparse.Namespace) -> int:
+    """Phase 5 standalone worker — daemon or one-shot jobs."""
+    from dataclasses import replace as dc_replace
+
+    from arb.worker import ArbWorker, WorkerConfig, load_status
+
+    config = ArbConfig.from_env()
+    wc = WorkerConfig.from_env()
+    overrides = {}
+    if getattr(args, "scan_limit", None) is not None:
+        overrides["scan_limit"] = args.scan_limit
+    if getattr(args, "paper", False):
+        overrides["paper"] = True
+    if getattr(args, "ws", False):
+        overrides["use_ws"] = True
+    if overrides:
+        wc = dc_replace(wc, **overrides)
+
+    worker = ArbWorker(config, wc)
+
+    if args.worker_command == "status":
+        st = load_status(config.state_root)
+        if st is None:
+            print(f"No worker status at {config.state_root / 'worker_status.json'}")
+            return 1
+        if args.json:
+            print(json.dumps(st, indent=2))
+        else:
+            print(f"running={st.get('running')} started={st.get('started_at')}")
+            print(f"heartbeat={st.get('last_heartbeat')}")
+            print(f"scans={st.get('scans')} loops={st.get('loops')} alerts={st.get('alerts')}")
+            print(f"last_scan={st.get('last_scan_at')} last_loop={st.get('last_loop_at')}")
+            print(f"last_error={st.get('last_error')}")
+            pid_path = config.state_root / "worker.pid"
+            if pid_path.exists():
+                print(f"pid_file={pid_path.read_text().strip()}")
+        return 0
+
+    if args.worker_command == "once":
+        jobs = [j.strip() for j in (args.jobs or "scan").split(",") if j.strip()]
+        out = worker.run_once(jobs=jobs)
+        if args.json:
+            print(json.dumps(out, indent=2))
+        else:
+            print(f"worker once @ {out['at']}")
+            for name, result in out["jobs"].items():
+                print(f"  {name}: {result}")
+        return 0 if not any(isinstance(v, dict) and "error" in v for v in out["jobs"].values()) else 1
+
+    if args.worker_command == "run":
+        print("Starting ArbWorker (Ctrl+C / SIGTERM to stop)…")
+        worker.run_forever()
+        return 0
+
+    print(f"Unknown worker command: {args.worker_command}")
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="polymarket-arb",
-        description="Polymarket Dutch-book arb bot — Phases 1–4 (money loop + intelligence).",
+        description="Polymarket Dutch-book arb bot — Phases 1–5 (money loop + intelligence + worker).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -540,6 +598,34 @@ def build_parser() -> argparse.ArgumentParser:
     rej.add_argument("proposal_id")
     rej.add_argument("--by", default="human")
     rej.set_defaults(func=cmd_reject)
+
+    worker = sub.add_parser("worker", help="Phase 5 standalone 24/7 worker")
+    worker_sub = worker.add_subparsers(dest="worker_command", required=True)
+
+    w_run = worker_sub.add_parser("run", help="Run forever (daemon)")
+    w_run.add_argument("--paper", action="store_true", help="Force paper loop")
+    w_run.add_argument("--ws", action="store_true", help="WS re-verify in loop ticks")
+    w_run.add_argument("--scan-limit", type=int, default=None)
+    w_run.set_defaults(func=cmd_worker)
+
+    w_once = worker_sub.add_parser("once", help="Run selected jobs once (cron/cloud)")
+    w_once.add_argument(
+        "--jobs",
+        default="scan",
+        help="Comma-separated: scan,loop,reconcile,postmortem",
+    )
+    w_once.add_argument("--paper", action="store_true")
+    w_once.add_argument("--ws", action="store_true")
+    w_once.add_argument("--scan-limit", type=int, default=None)
+    w_once.add_argument("--json", action="store_true")
+    w_once.set_defaults(func=cmd_worker)
+
+    w_st = worker_sub.add_parser("status", help="Show worker heartbeat/status")
+    w_st.add_argument("--json", action="store_true")
+    w_st.add_argument("--paper", action="store_true")
+    w_st.add_argument("--ws", action="store_true")
+    w_st.add_argument("--scan-limit", type=int, default=None)
+    w_st.set_defaults(func=cmd_worker)
 
     return parser
 
