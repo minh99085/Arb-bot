@@ -8,5 +8,15 @@
     "enabled": true,
     "deliver": "telegram",
     "description": "Scan all active Polymarket markets for Dutch-book violations and alert on stdout."
+  },
+  {
+    "id": "polymarket-daily-postmortem",
+    "name": "Polymarket arb daily postmortem",
+    "schedule": "0 6 * * *",
+    "no_agent": true,
+    "script": "run_postmortem.py",
+    "enabled": true,
+    "deliver": "telegram",
+    "description": "Label last 7 days, write postmortem, create pending threshold proposals for human review."
   }
 ]

@@ -371,10 +371,96 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_postmortem(args: argparse.Namespace) -> int:
+    from arb.postmortem import run_postmortem
+
+    config = ArbConfig.from_env()
+    store = OpportunityStore(config.state_db)
+    report = run_postmortem(
+        config,
+        store,
+        days=args.days,
+        create_proposals=not args.no_proposals,
+    )
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+        return 0
+    print(f"Postmortem — last {report.days} days")
+    print(f"  Labeled:        {report.total_labeled}")
+    print(f"  Labels:         {report.label_counts}")
+    print(f"  FP rate:        {report.false_positive_rate:.1%}")
+    print(f"  WS evaporate:   {report.ws_evaporation_rate:.1%}")
+    print(f"  Paper PnL:      ${report.paper_pnl:.4f}")
+    print(f"  Verified-like:  {report.verified_hits}")
+    print(f"  Dataset:        {report.dataset_path}")
+    print(f"  Report:         {report.report_path}")
+    if report.proposals_created:
+        print(f"  Proposals:      {', '.join(report.proposals_created)}")
+        print("  Next: python -m arb proposals && python -m arb approve <id>")
+    for note in report.notes:
+        print(f"  Note: {note}")
+    return 0
+
+
+def cmd_proposals(args: argparse.Namespace) -> int:
+    from arb.proposals import ProposalStore, render_env_snippet
+
+    config = ArbConfig.from_env()
+    store = ProposalStore(config.state_root / "proposals.json")
+    items = store.list(status=args.status)
+    if args.env_snippet:
+        approved = store.list(status="approved")
+        print(render_env_snippet(approved))
+        return 0
+    if args.json:
+        print(json.dumps([p.to_dict() for p in items], indent=2))
+        return 0
+    if not items:
+        print("No proposals." + (f" (status={args.status})" if args.status else ""))
+        return 0
+    for p in items:
+        print(
+            f"- [{p.status:8}] {p.id}\n"
+            f"    {p.key}: {p.current_value} → {p.proposed_value}\n"
+            f"    {p.rationale}"
+        )
+    return 0
+
+
+def cmd_approve(args: argparse.Namespace) -> int:
+    from arb.proposals import ProposalStore, render_env_snippet
+
+    config = ArbConfig.from_env()
+    store = ProposalStore(config.state_root / "proposals.json")
+    try:
+        p = store.decide(args.proposal_id, approve=True, by=args.by)
+    except (KeyError, ValueError) as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(f"Approved {p.id}: {p.key}={p.proposed_value}")
+    print("Copy into .env manually (not auto-applied):")
+    print(render_env_snippet([p]))
+    return 0
+
+
+def cmd_reject(args: argparse.Namespace) -> int:
+    from arb.proposals import ProposalStore
+
+    config = ArbConfig.from_env()
+    store = ProposalStore(config.state_root / "proposals.json")
+    try:
+        p = store.decide(args.proposal_id, approve=False, by=args.by)
+    except (KeyError, ValueError) as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(f"Rejected {p.id}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="polymarket-arb",
-        description="Polymarket Dutch-book arb bot — Phase 1–3 money loop + WS feed.",
+        description="Polymarket Dutch-book arb bot — Phases 1–4 (money loop + intelligence).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -432,6 +518,28 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--persist-rejects", action="store_true", help="Mark evaporated REJECTED")
     watch.add_argument("--json", action="store_true")
     watch.set_defaults(func=cmd_watch)
+
+    post = sub.add_parser("postmortem", help="Label history + propose thresholds (Phase 4)")
+    post.add_argument("--days", type=int, default=7)
+    post.add_argument("--no-proposals", action="store_true")
+    post.add_argument("--json", action="store_true")
+    post.set_defaults(func=cmd_postmortem)
+
+    props = sub.add_parser("proposals", help="List threshold proposals")
+    props.add_argument("--status", default=None, help="pending|approved|rejected|applied")
+    props.add_argument("--env-snippet", action="store_true", help="Print approved env lines")
+    props.add_argument("--json", action="store_true")
+    props.set_defaults(func=cmd_proposals)
+
+    appr = sub.add_parser("approve", help="Human-approve a proposal (does not auto-apply)")
+    appr.add_argument("proposal_id")
+    appr.add_argument("--by", default="human")
+    appr.set_defaults(func=cmd_approve)
+
+    rej = sub.add_parser("reject", help="Human-reject a proposal")
+    rej.add_argument("proposal_id")
+    rej.add_argument("--by", default="human")
+    rej.set_defaults(func=cmd_reject)
 
     return parser
 

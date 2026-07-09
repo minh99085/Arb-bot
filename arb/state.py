@@ -345,6 +345,20 @@ class OpportunityStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_since(self, *, days: int = 30, limit: int = 5_000) -> list[dict]:
+        """Opportunities detected within the last N days (newest first)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM opportunities
+                WHERE detected_at >= datetime('now', ?)
+                ORDER BY detected_at DESC
+                LIMIT ?
+                """,
+                (f"-{days} days", limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get(self, opportunity_id: int) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(

@@ -65,8 +65,17 @@ python -m arb watch --scan-first --limit 10 --seconds 20
 python -m arb loop --paper --ws --limit 50 --ws-sec 15
 ```
 
+## Phase 4 — Intelligence plane (human-gated)
+
+```bash
+python -m arb postmortem --days 7
+python -m arb proposals
+python -m arb approve <proposal_id>
+python -m arb proposals --env-snippet   # copy into .env yourself
+```
+
 Hot path is deterministic: scan → verify → WS re-verify → risk → paper fill → reconcile.
-Live CLOB is gated (`ARB_ALLOW_LIVE`) and not implemented yet.
+Learning path proposes only; humans approve. Live CLOB still gated.
 
 ## Commands
 
@@ -80,6 +89,8 @@ python -m arb reconcile
 python -m arb loop --paper
 python -m arb loop --paper --ws
 python -m arb watch --scan-first --seconds 20
+python -m arb postmortem --days 7
+python -m arb proposals
 ```
 
 Cron script-only (no LLM):
