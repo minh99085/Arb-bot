@@ -41,8 +41,8 @@ Build a **Dutch-Book Arb bot** for the **Polymarket** predictive markets platfor
 
 Build **one phase at a time**. Do not start the next phase until the previous phase is done and its gate passes.
 
-1. **Phase 1 — Honest scanner (study mode)** — scan all markets, CLOB verify, SQLite + LEDGER, alerts. No trading. Gate: study logs show enough CLOB-verified signals (`python -m arb study`).
-2. **Phase 2 — Execution plane** — `risk.py`, paper fills, `reconcile.py`, py-clob-client path. Gate: paper PnL positive after fees.
+1. **Phase 1 — Honest scanner (study mode)** — DONE. Scan all markets, CLOB verify, SQLite + LEDGER, alerts. Gate: `python -m arb study`.
+2. **Phase 2 — Execution plane** — DONE (paper). `risk.py`, paper fills, `reconcile.py`, live stub hard-gated. Loop: `python -m arb loop --paper`.
 3. **Phase 3 — Feed upgrade** — WebSocket CLOB, sub-second re-verify. Still deterministic.
 4. **Phase 4 — Intelligence plane** — daily postmortem cron, labeled dataset, human-approved threshold updates.
 5. **Phase 5 — 24/7 ops** — standalone arb worker + cloud scheduler; Hermes for alerts/postmortem only.

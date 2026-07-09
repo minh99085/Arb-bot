@@ -41,15 +41,25 @@ Config (optional, in `.env`):
 | `ARB_DRY_RUN` | `true` | Skip live order placement |
 | `ARB_STATE_DIR` | `~/.hermes/profiles/polymarket-arb/state` | SQLite opportunity log |
 
-## Phase 1 — Study Mode (current)
-
-No trading. Scan → verify → log. Check go/no-go before Phase 2:
+## Phase 1 — Study Mode
 
 ```bash
 python -m arb scan --study
 python -m arb status
 python -m arb study --days 30
 ```
+
+## Phase 2 — Execution Plane (paper money loop)
+
+```bash
+python -m arb loop --paper --limit 50 --trade-limit 5
+python -m arb trade --paper --limit 5
+python -m arb reconcile
+python -m arb status
+```
+
+Hot path is deterministic: scan → verify → risk → paper fill → reconcile.
+Live CLOB is gated (`ARB_ALLOW_LIVE`) and not implemented yet.
 
 ## Commands
 
@@ -58,7 +68,9 @@ python -m arb scan
 python -m arb scan --gamma-only --limit 200 --json
 python -m arb status --state CLOB_VERIFIED
 python -m arb study --days 30
-# trade is blocked until Phase 2
+python -m arb trade --paper
+python -m arb reconcile
+python -m arb loop --paper
 ```
 
 Cron script-only (no LLM):

@@ -12,6 +12,12 @@ from typing import Any, Iterator
 from arb.dutch_book import Opportunity
 from arb.models import OppState, RejectReason
 
+OPEN_POSITION_STATES = (
+    OppState.RISK_OK.value,
+    OppState.ORDER_PLACED.value,
+    OppState.FILLED.value,
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -78,6 +84,24 @@ class OpportunityStore:
                 """
             )
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS fills (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    opportunity_id INTEGER NOT NULL,
+                    filled_at TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    size_usd REAL NOT NULL,
+                    fill_total REAL NOT NULL,
+                    fees_usd REAL NOT NULL,
+                    slippage_usd REAL NOT NULL,
+                    expected_pnl REAL NOT NULL,
+                    realized_pnl REAL,
+                    fill_prices TEXT NOT NULL,
+                    FOREIGN KEY(opportunity_id) REFERENCES opportunities(id)
+                )
+                """
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_opps_detected ON opportunities(detected_at DESC)"
             )
             conn.execute(
@@ -85,6 +109,9 @@ class OpportunityStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_opps_state ON opportunities(state)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fills_opp ON fills(opportunity_id)"
             )
             self._migrate(conn)
 
@@ -317,3 +344,158 @@ class OpportunityStore:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get(self, opportunity_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM opportunities WHERE id = ?",
+                (opportunity_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def transition(
+        self,
+        opportunity_id: int,
+        to_state: OppState,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT state FROM opportunities WHERE id = ?",
+                (opportunity_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"opportunity {opportunity_id} not found")
+            from_state = row["state"]
+            conn.execute(
+                """
+                UPDATE opportunities
+                SET state = ?, updated_at = ?,
+                    reject_reason = COALESCE(?, reject_reason)
+                WHERE id = ?
+                """,
+                (to_state.value, now, reason, opportunity_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO transitions (opportunity_id, at, from_state, to_state, reason)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (opportunity_id, now, from_state, to_state.value, reason),
+            )
+
+    def record_fill(
+        self,
+        *,
+        opportunity_id: int,
+        mode: str,
+        size_usd: float,
+        fill_total: float,
+        fees_usd: float,
+        slippage_usd: float,
+        expected_pnl: float,
+        fill_prices: list[float],
+        realized_pnl: float | None = None,
+    ) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO fills (
+                    opportunity_id, filled_at, mode, size_usd, fill_total,
+                    fees_usd, slippage_usd, expected_pnl, realized_pnl, fill_prices
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    opportunity_id,
+                    _now(),
+                    mode,
+                    size_usd,
+                    fill_total,
+                    fees_usd,
+                    slippage_usd,
+                    expected_pnl,
+                    realized_pnl,
+                    json.dumps(fill_prices),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def set_fill_realized(self, fill_id: int, realized_pnl: float) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE fills SET realized_pnl = ? WHERE id = ?",
+                (realized_pnl, fill_id),
+            )
+
+    def list_fills(self, limit: int = 100) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM fills
+                ORDER BY filled_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_open(self) -> int:
+        placeholders = ",".join("?" * len(OPEN_POSITION_STATES))
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS c FROM opportunities WHERE state IN ({placeholders})",
+                OPEN_POSITION_STATES,
+            ).fetchone()
+        return int(row["c"]) if row else 0
+
+    def has_open_condition(self, condition_id: str) -> bool:
+        placeholders = ",".join("?" * len(OPEN_POSITION_STATES))
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS c FROM opportunities
+                WHERE condition_id = ? AND state IN ({placeholders})
+                """,
+                (condition_id, *OPEN_POSITION_STATES),
+            ).fetchone()
+        return bool(row and int(row["c"]) > 0)
+
+    def count_fills_today(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM fills
+                WHERE date(filled_at) = date('now')
+                """
+            ).fetchone()
+        return int(row["c"]) if row else 0
+
+    def realized_pnl_today(self) -> float:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(realized_pnl), 0) AS pnl FROM fills
+                WHERE date(filled_at) = date('now') AND realized_pnl IS NOT NULL
+                """
+            ).fetchone()
+        return float(row["pnl"]) if row else 0.0
+
+    def opportunity_from_row(self, row: dict) -> Opportunity:
+        payload = json.loads(row["payload"])
+        from arb.dutch_book import ArbKind
+
+        return Opportunity(
+            kind=ArbKind(payload["kind"]),
+            condition_id=payload["condition_id"],
+            slug=payload["slug"],
+            question=payload["question"],
+            outcomes=payload["outcomes"],
+            token_ids=payload["token_ids"],
+            prices=payload["prices"],
+            total=payload["total"],
+            edge=payload["edge"],
+            edge_bps=payload["edge_bps"],
+            source=payload["source"],
+        )

@@ -1,4 +1,4 @@
-"""Trade execution hook — defers to py-clob-client when credentials are present."""
+"""Execution plane — paper fills now; live CLOB stub gated hard."""
 
 from __future__ import annotations
 
@@ -6,6 +6,10 @@ from dataclasses import dataclass
 
 from arb.config import ArbConfig
 from arb.dutch_book import Opportunity
+from arb.models import ExecMode, OppState, RiskRejectReason
+from arb.paper import PaperFill, simulate_paper_fill
+from arb.risk import RiskDecision, check_risk
+from arb.state import OpportunityStore
 
 
 @dataclass
@@ -13,33 +17,141 @@ class TradeResult:
     opportunity: Opportunity
     status: str
     detail: str
+    opportunity_id: int | None = None
+    fill: PaperFill | None = None
+    risk: RiskDecision | None = None
 
 
-def execute_opportunity(config: ArbConfig, opp: Opportunity) -> TradeResult:
-    """Execute or simulate a Dutch-book trade.
+def execute_opportunity(
+    config: ArbConfig,
+    store: OpportunityStore,
+    opp: Opportunity,
+    *,
+    opportunity_id: int | None = None,
+    ask_depth: float | None = None,
+    bid_depth: float | None = None,
+    category: str | None = None,
+) -> TradeResult:
+    """Run risk → order → fill for one opportunity.
 
-    Live execution requires POLYMARKET_PRIVATE_KEY and a future py-clob-client
-    integration. Until then, dry-run mode records intent without placing orders.
+    Phase 2 default is paper. Live requires ARB_ALLOW_LIVE + key + exec_mode=live.
     """
-    if config.dry_run or not config.trading_enabled():
+    risk = check_risk(
+        config,
+        store,
+        opp,
+        ask_depth=ask_depth,
+        bid_depth=bid_depth,
+        category=category,
+    )
+    if not risk.ok:
+        if opportunity_id is not None:
+            store.transition(
+                opportunity_id,
+                OppState.REJECTED,
+                reason=(risk.reason or RiskRejectReason.OTHER).value,
+            )
         return TradeResult(
             opportunity=opp,
-            status="dry_run",
-            detail=(
-                "Trading skipped. Set POLYMARKET_PRIVATE_KEY and ARB_DRY_RUN=false "
-                "to enable live execution once the CLOB client is wired."
-            ),
+            status="risk_rejected",
+            detail=risk.detail,
+            opportunity_id=opportunity_id,
+            risk=risk,
         )
+
+    opp_id = opportunity_id
+    if opp_id is None:
+        opp_id = store.save(
+            opp,
+            state=OppState.RISK_OK,
+            verified=True,
+            ask_depth=ask_depth,
+            bid_depth=bid_depth,
+            hypothetical_pnl=opp.edge * risk.size_usd,
+        )
+    else:
+        store.transition(opp_id, OppState.RISK_OK, reason="risk_ok")
+
+    if config.exec_mode == ExecMode.DISABLED:
+        return TradeResult(
+            opportunity=opp,
+            status="disabled",
+            detail="ARB_EXEC_MODE=disabled",
+            opportunity_id=opp_id,
+            risk=risk,
+        )
+
+    if config.exec_mode == ExecMode.LIVE:
+        if not config.live_allowed():
+            return TradeResult(
+                opportunity=opp,
+                status="live_blocked",
+                detail=(
+                    "Live blocked. Need ARB_ALLOW_LIVE=true, ARB_EXEC_MODE=live, "
+                    "ARB_DRY_RUN=false, ARB_STUDY_MODE=false, POLYMARKET_PRIVATE_KEY, "
+                    "and ARB_KILL_SWITCH=false."
+                ),
+                opportunity_id=opp_id,
+                risk=risk,
+            )
+        return TradeResult(
+            opportunity=opp,
+            status="live_not_implemented",
+            detail=(
+                "Live CLOB path reserved for py-clob-client wiring. "
+                "Use ARB_EXEC_MODE=paper until then."
+            ),
+            opportunity_id=opp_id,
+            risk=risk,
+        )
+
+    # Paper path
+    fill = simulate_paper_fill(config, opp, size_usd=risk.size_usd)
+    store.transition(opp_id, OppState.ORDER_PLACED, reason="paper_order")
+    fill_id = store.record_fill(
+        opportunity_id=opp_id,
+        mode="paper",
+        size_usd=fill.size_usd,
+        fill_total=fill.fill_total,
+        fees_usd=fill.fees_usd,
+        slippage_usd=fill.slippage_usd,
+        expected_pnl=fill.expected_pnl,
+        fill_prices=fill.fill_prices,
+    )
+    store.transition(opp_id, OppState.FILLED, reason=f"paper_fill:{fill_id}")
 
     return TradeResult(
         opportunity=opp,
-        status="not_implemented",
+        status="paper_filled",
         detail=(
-            "Credentials detected but live CLOB execution is not wired yet. "
-            "Install py-clob-client and implement signed order placement."
+            f"paper size=${fill.size_usd:.2f} fill_total={fill.fill_total:.4f} "
+            f"expected_pnl=${fill.expected_pnl:.4f}"
         ),
+        opportunity_id=opp_id,
+        fill=fill,
+        risk=risk,
     )
 
 
-def execute_batch(config: ArbConfig, opportunities: list[Opportunity]) -> list[TradeResult]:
-    return [execute_opportunity(config, opp) for opp in opportunities]
+def execute_batch(
+    config: ArbConfig,
+    store: OpportunityStore,
+    opportunities: list[tuple[Opportunity, int | None]],
+) -> list[TradeResult]:
+    """Execute a list of (opportunity, optional_row_id) pairs."""
+    results: list[TradeResult] = []
+    for opp, opp_id in opportunities:
+        row = store.get(opp_id) if opp_id is not None else None
+        ask_depth = float(row["ask_depth"]) if row and row.get("ask_depth") is not None else None
+        bid_depth = float(row["bid_depth"]) if row and row.get("bid_depth") is not None else None
+        results.append(
+            execute_opportunity(
+                config,
+                store,
+                opp,
+                opportunity_id=opp_id,
+                ask_depth=ask_depth,
+                bid_depth=bid_depth,
+            )
+        )
+    return results
