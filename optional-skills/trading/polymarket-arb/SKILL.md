@@ -58,7 +58,14 @@ python -m arb reconcile
 python -m arb status
 ```
 
-Hot path is deterministic: scan → verify → risk → paper fill → reconcile.
+## Phase 3 — WebSocket feed
+
+```bash
+python -m arb watch --scan-first --limit 10 --seconds 20
+python -m arb loop --paper --ws --limit 50 --ws-sec 15
+```
+
+Hot path is deterministic: scan → verify → WS re-verify → risk → paper fill → reconcile.
 Live CLOB is gated (`ARB_ALLOW_LIVE`) and not implemented yet.
 
 ## Commands
@@ -71,6 +78,8 @@ python -m arb study --days 30
 python -m arb trade --paper
 python -m arb reconcile
 python -m arb loop --paper
+python -m arb loop --paper --ws
+python -m arb watch --scan-first --seconds 20
 ```
 
 Cron script-only (no LLM):

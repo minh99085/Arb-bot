@@ -37,6 +37,12 @@ class ArbConfig:
     paper_slippage_bps: float = 10.0
     allow_live: bool = False
     category_blocklist: tuple[str, ...] = ()
+    # Phase 3 feed
+    ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    ws_enabled: bool = True
+    ws_watch_sec: float = 30.0
+    ws_max_assets: int = 40
+    ws_seed_rest: bool = True
 
     @property
     def min_edge(self) -> float:
@@ -120,6 +126,13 @@ class ArbConfig:
             paper_slippage_bps=_float("ARB_PAPER_SLIPPAGE_BPS", 10.0),
             allow_live=_bool("ARB_ALLOW_LIVE", False),
             category_blocklist=blocklist,
+            ws_url=os.environ.get(
+                "ARB_WS_URL", "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+            ),
+            ws_enabled=_bool("ARB_WS_ENABLED", True),
+            ws_watch_sec=_float("ARB_WS_WATCH_SEC", 30.0),
+            ws_max_assets=int(os.environ.get("ARB_WS_MAX_ASSETS", "40")),
+            ws_seed_rest=_bool("ARB_WS_SEED_REST", True),
         )
 
     def with_overrides(

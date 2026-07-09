@@ -43,7 +43,7 @@ Build **one phase at a time**. Do not start the next phase until the previous ph
 
 1. **Phase 1 — Honest scanner (study mode)** — DONE. Scan all markets, CLOB verify, SQLite + LEDGER, alerts. Gate: `python -m arb study`.
 2. **Phase 2 — Execution plane** — DONE (paper). `risk.py`, paper fills, `reconcile.py`, live stub hard-gated. Loop: `python -m arb loop --paper`.
-3. **Phase 3 — Feed upgrade** — WebSocket CLOB, sub-second re-verify. Still deterministic.
+3. **Phase 3 — Feed upgrade** — DONE. WebSocket CLOB (`ws_feed` + `book_cache` + `reverify`). `watch` / `loop --ws`.
 4. **Phase 4 — Intelligence plane** — daily postmortem cron, labeled dataset, human-approved threshold updates.
 5. **Phase 5 — 24/7 ops** — standalone arb worker + cloud scheduler; Hermes for alerts/postmortem only.
 

@@ -226,7 +226,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
 
 
 def cmd_loop(args: argparse.Namespace) -> int:
-    """One full money-loop turn: scan → paper trade verified → reconcile."""
+    """One full money-loop turn: scan → [ws reverify] → paper trade → reconcile."""
     config = ArbConfig.from_env().with_overrides(
         max_markets=args.limit,
         study_mode=False if args.paper else None,
@@ -242,7 +242,37 @@ def cmd_loop(args: argparse.Namespace) -> int:
     print(f"scanned={result.scanned} verified={len(result.verified_hits)}")
 
     store = OpportunityStore(config.state_db)
-    rows = store.recent(limit=args.trade_limit, state=OppState.CLOB_VERIFIED)
+
+    if args.ws and config.ws_enabled and result.verified_hits:
+        print("=== LOOP: ws reverify ===")
+        from arb.reverify import reverify_opportunities
+        from arb.ws_feed import run_feed_sync
+
+        asset_ids: list[str] = []
+        for opp in result.verified_hits:
+            asset_ids.extend(opp.token_ids)
+        asset_ids = list(dict.fromkeys(asset_ids))[: config.ws_max_assets]
+        cache = run_feed_sync(
+            asset_ids,
+            duration_sec=min(config.ws_watch_sec, args.ws_sec or config.ws_watch_sec),
+            ws_url=config.ws_url,
+            seed_rest=config.ws_seed_rest,
+        )
+        rv = reverify_opportunities(config, cache, result.verified_hits)
+        print(
+            f"ws checked={rv.checked} still_valid={len(rv.still_valid)} "
+            f"evaporated={len(rv.evaporated)} missing={len(rv.missing_book)}"
+        )
+        # Prefer WS-still-valid for trade selection
+        valid_ids = {o.condition_id for o in rv.still_valid}
+        rows = [
+            r
+            for r in store.recent(limit=args.trade_limit * 3, state=OppState.CLOB_VERIFIED)
+            if r["condition_id"] in valid_ids
+        ][: args.trade_limit]
+    else:
+        rows = store.recent(limit=args.trade_limit, state=OppState.CLOB_VERIFIED)
+
     pairs = [(store.opportunity_from_row(r), int(r["id"])) for r in rows]
 
     print("=== LOOP: trade ===")
@@ -261,10 +291,90 @@ def cmd_loop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Phase 3: stream CLOB books and re-verify opportunities in real time."""
+    from arb.book_cache import BookCache
+    from arb.reverify import reverify_opportunities, reverify_store_verified
+    from arb.ws_feed import run_feed_sync
+
+    config = ArbConfig.from_env()
+    store = OpportunityStore(config.state_db)
+    duration = args.seconds if args.seconds is not None else config.ws_watch_sec
+
+    # Collect assets: explicit tokens, or from recent verified / gamma scan
+    asset_ids: list[str] = list(args.token or [])
+    watch_opps = []
+
+    if args.from_store:
+        rows = store.recent(limit=args.limit, state=OppState.CLOB_VERIFIED)
+        watch_opps = [store.opportunity_from_row(r) for r in rows]
+        for opp in watch_opps:
+            asset_ids.extend(opp.token_ids)
+
+    if args.scan_first:
+        result = run_scan(
+            config.with_overrides(max_markets=args.limit),
+            gamma_only=False,
+            persist=not args.no_persist,
+        )
+        watch_opps = result.verified_hits or result.gamma_hits[: args.limit]
+        for opp in watch_opps:
+            asset_ids.extend(opp.token_ids)
+
+    asset_ids = list(dict.fromkeys(asset_ids))[: config.ws_max_assets]
+    if not asset_ids:
+        print("No asset IDs to watch. Use --token, --from-store, or --scan-first.")
+        return 1
+
+    print(f"Watching {len(asset_ids)} assets for {duration:.0f}s via {config.ws_url}")
+    cache = BookCache()
+    updates = {"n": 0}
+
+    def on_update(touched, book_cache):
+        updates["n"] += 1
+        if watch_opps and updates["n"] % max(1, args.every) == 0:
+            rv = reverify_opportunities(config, book_cache, watch_opps)
+            print(
+                f"[update {updates['n']}] touched={len(touched)} "
+                f"valid={len(rv.still_valid)} evaporated={len(rv.evaporated)}"
+            )
+            for opp in rv.still_valid[:3]:
+                print(f"  VALID {opp.kind.value} edge={opp.edge_bps:.1f}bps {opp.question[:60]}")
+
+    try:
+        cache = run_feed_sync(
+            asset_ids,
+            duration_sec=duration,
+            cache=cache,
+            on_update=on_update if watch_opps else None,
+            ws_url=config.ws_url,
+            seed_rest=not args.no_seed,
+        )
+    except RuntimeError as exc:
+        print(f"Feed error: {exc}")
+        return 1
+
+    print(f"Done. cache_size={len(cache)} updates={cache.updates} last={cache.last_event_at}")
+
+    if watch_opps:
+        rv = reverify_opportunities(config, cache, watch_opps)
+        if args.json:
+            print(json.dumps(rv.to_dict(), indent=2))
+        else:
+            print(
+                f"Final reverify: checked={rv.checked} valid={len(rv.still_valid)} "
+                f"evaporated={len(rv.evaporated)} missing={len(rv.missing_book)}"
+            )
+        if args.persist_rejects and args.from_store:
+            reverify_store_verified(config, store, cache, limit=args.limit, persist=True)
+            print("Persisted evaporated → REJECTED (ws_reverify)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="polymarket-arb",
-        description="Polymarket Dutch-book arb bot — Phase 1+2 money loop.",
+        description="Polymarket Dutch-book arb bot — Phase 1–3 money loop + WS feed.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -302,11 +412,26 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--json", action="store_true")
     rec.set_defaults(func=cmd_reconcile)
 
-    loop = sub.add_parser("loop", help="One turn: scan → trade → reconcile")
+    loop = sub.add_parser("loop", help="One turn: scan → [ws] → trade → reconcile")
     loop.add_argument("--paper", action="store_true", help="Paper execution loop")
     loop.add_argument("--limit", type=int, default=50, help="Max markets to scan")
     loop.add_argument("--trade-limit", type=int, default=5)
+    loop.add_argument("--ws", action="store_true", help="WS re-verify before trade")
+    loop.add_argument("--ws-sec", type=float, default=None, help="WS watch seconds")
     loop.set_defaults(func=cmd_loop)
+
+    watch = sub.add_parser("watch", help="Stream CLOB books and re-verify (Phase 3)")
+    watch.add_argument("--seconds", type=float, default=None, help="Watch duration")
+    watch.add_argument("--token", action="append", default=[], help="Token ID to subscribe")
+    watch.add_argument("--from-store", action="store_true", help="Watch CLOB_VERIFIED from DB")
+    watch.add_argument("--scan-first", action="store_true", help="Scan then watch those tokens")
+    watch.add_argument("--limit", type=int, default=20)
+    watch.add_argument("--every", type=int, default=5, help="Reverify every N WS updates")
+    watch.add_argument("--no-seed", action="store_true", help="Skip REST book seed")
+    watch.add_argument("--no-persist", action="store_true")
+    watch.add_argument("--persist-rejects", action="store_true", help="Mark evaporated REJECTED")
+    watch.add_argument("--json", action="store_true")
+    watch.set_defaults(func=cmd_watch)
 
     return parser
 

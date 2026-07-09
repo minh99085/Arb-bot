@@ -110,15 +110,27 @@ def detect_from_asks(
     min_edge: float,
     fee_rate: float,
 ) -> Opportunity | None:
-    return detect_from_prices(
-        question=question,
-        slug=slug,
+    """Buy-bundle only: sum of asks must be below 1 - fees - min_edge."""
+    if len(asks) < 2 or len(token_ids) < 2:
+        return None
+    if any(p <= 0 or p >= 1 for p in asks):
+        return None
+    total = sum(asks)
+    buy_threshold = 1.0 - fee_rate - min_edge
+    if total >= buy_threshold:
+        return None
+    edge = buy_threshold - total
+    return Opportunity(
+        kind=ArbKind.BUY_BUNDLE,
         condition_id=condition_id,
+        slug=slug,
+        question=question,
         outcomes=outcomes,
         token_ids=token_ids,
         prices=asks,
-        min_edge=min_edge,
-        fee_rate=fee_rate,
+        total=total,
+        edge=edge,
+        edge_bps=_edge_bps(edge),
         source="clob_asks",
     )
 
