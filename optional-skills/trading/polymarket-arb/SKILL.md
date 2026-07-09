@@ -41,15 +41,24 @@ Config (optional, in `.env`):
 | `ARB_DRY_RUN` | `true` | Skip live order placement |
 | `ARB_STATE_DIR` | `~/.hermes/profiles/polymarket-arb/state` | SQLite opportunity log |
 
-## Commands
+## Phase 1 — Study Mode (current)
 
-Run from repo root or any install with the `arb` package:
+No trading. Scan → verify → log. Check go/no-go before Phase 2:
+
+```bash
+python -m arb scan --study
+python -m arb status
+python -m arb study --days 30
+```
+
+## Commands
 
 ```bash
 python -m arb scan
 python -m arb scan --gamma-only --limit 200 --json
-python -m arb status
-python -m arb trade --verified-only
+python -m arb status --state CLOB_VERIFIED
+python -m arb study --days 30
+# trade is blocked until Phase 2
 ```
 
 Cron script-only (no LLM):

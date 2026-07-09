@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from arb.dutch_book import ArbKind, Opportunity
+from arb.models import OppState
 from arb.state import OpportunityStore
 
 
@@ -26,7 +27,7 @@ def _sample_opportunity() -> Opportunity:
 def test_store_roundtrip(tmp_path: Path):
     db = tmp_path / "opps.sqlite"
     store = OpportunityStore(db)
-    row_id = store.save(_sample_opportunity(), verified=True)
+    row_id = store.save(_sample_opportunity(), state=OppState.CLOB_VERIFIED, verified=True)
     assert row_id == 1
     assert store.count() == 1
     rows = store.recent()
@@ -34,3 +35,4 @@ def test_store_roundtrip(tmp_path: Path):
     payload = json.loads(rows[0]["payload"])
     assert payload["kind"] == "buy_bundle"
     assert rows[0]["verified"] == 1
+    assert rows[0]["state"] == OppState.CLOB_VERIFIED.value
