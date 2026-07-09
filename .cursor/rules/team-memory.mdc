@@ -46,5 +46,6 @@ Build **one phase at a time**. Do not start the next phase until the previous ph
 3. **Phase 3 — Feed upgrade** — DONE. WebSocket CLOB (`ws_feed` + `book_cache` + `reverify`). `watch` / `loop --ws`.
 4. **Phase 4 — Intelligence plane** — DONE. Labels, postmortem, human-gated proposals (`postmortem` / `approve` / `reject`).
 5. **Phase 5 — 24/7 ops** — DONE. Standalone `arb worker` daemon + systemd/cron/GH Actions templates. Hermes optional for alerts only.
+6. **Phase 6 — Grok + live CLOB** — DONE. `arb/grok.py` (postmortem `--grok`) + `arb/clob_live.py` (`py-clob-client-v2`), hard-gated.
 
 Hot path is deterministic. LLM only on the intelligence plane. Scanner never grades its own signals.

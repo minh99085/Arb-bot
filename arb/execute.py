@@ -1,8 +1,9 @@
-"""Execution plane — paper fills now; live CLOB stub gated hard."""
+"""Execution plane — paper fills + live CLOB (py-clob-client-v2), hard-gated."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from arb.config import ArbConfig
 from arb.dutch_book import Opportunity
@@ -20,6 +21,7 @@ class TradeResult:
     opportunity_id: int | None = None
     fill: PaperFill | None = None
     risk: RiskDecision | None = None
+    live: Any | None = None
 
 
 def execute_opportunity(
@@ -34,7 +36,7 @@ def execute_opportunity(
 ) -> TradeResult:
     """Run risk → order → fill for one opportunity.
 
-    Phase 2 default is paper. Live requires ARB_ALLOW_LIVE + key + exec_mode=live.
+    Default is paper. Live requires ARB_ALLOW_LIVE + key + exec_mode=live + gates.
     """
     risk = check_risk(
         config,
@@ -94,15 +96,48 @@ def execute_opportunity(
                 opportunity_id=opp_id,
                 risk=risk,
             )
+        from arb.clob_live import execute_buy_bundle_live
+
+        store.transition(opp_id, OppState.ORDER_PLACED, reason="live_order")
+        live = execute_buy_bundle_live(config, opp, size_usd=risk.size_usd)
+        if not live.ok:
+            store.transition(
+                opp_id,
+                OppState.REJECTED,
+                reason=f"live_failed:{live.error or 'unknown'}",
+            )
+            return TradeResult(
+                opportunity=opp,
+                status="live_failed",
+                detail=live.error or "live order failed",
+                opportunity_id=opp_id,
+                risk=risk,
+                live=live,
+            )
+
+        expected_pnl = round(opp.edge * risk.size_usd, 6)
+        fill_id = store.record_fill(
+            opportunity_id=opp_id,
+            mode="live",
+            size_usd=live.size_usd or risk.size_usd,
+            fill_total=live.fill_total,
+            fees_usd=0.0,
+            slippage_usd=0.0,
+            expected_pnl=expected_pnl,
+            fill_prices=live.fill_prices or list(opp.prices),
+        )
+        oid_note = ",".join(live.order_ids[:4]) if live.order_ids else str(fill_id)
+        store.transition(opp_id, OppState.FILLED, reason=f"live_fill:{oid_note}")
         return TradeResult(
             opportunity=opp,
-            status="live_not_implemented",
+            status="live_filled",
             detail=(
-                "Live CLOB path reserved for py-clob-client wiring. "
-                "Use ARB_EXEC_MODE=paper until then."
+                f"live size=${risk.size_usd:.2f} orders={len(live.order_ids)} "
+                f"fill_total={live.fill_total:.4f} expected_pnl=${expected_pnl:.4f}"
             ),
             opportunity_id=opp_id,
             risk=risk,
+            live=live,
         )
 
     # Paper path

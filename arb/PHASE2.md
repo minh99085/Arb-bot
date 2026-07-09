@@ -56,14 +56,14 @@ python -m arb status
 | `ARB_MAX_DAILY_TRADES` | `20` | Daily fill cap |
 | `ARB_MAX_DAILY_LOSS_USD` | `50` | Daily realized loss halt |
 | `ARB_PAPER_SLIPPAGE_BPS` | `10` | Paper fill haircut |
-| `ARB_ALLOW_LIVE` | `false` | Required for live (still not implemented) |
-| `POLYMARKET_PRIVATE_KEY` | — | Required for live later |
+| `ARB_ALLOW_LIVE` | `false` | Required for live CLOB (Phase 6) |
+| `POLYMARKET_PRIVATE_KEY` | — | Required for live |
 
 ## Explicitly out of scope (later phases)
 
-- Live `py-clob-client` order placement (stub returns `live_not_implemented`)
+- Live CLOB → Phase 6 (`arb/clob_live.py`)
 - WebSocket feeds (Phase 3)
-- LLM postmortem (Phase 4)
+- LLM postmortem (Phase 4 deterministic; Phase 6 optional Grok)
 - Cloud 24/7 worker (Phase 5)
 
 ## Phase 3 gate

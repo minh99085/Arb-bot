@@ -29,7 +29,8 @@ not duplicate market data HTTP — it imports `skills/research/polymarket/script
 
 - Bundled `polymarket` research skill (market data)
 - Stdlib only for scanning
-- Optional live trading: `POLYMARKET_PRIVATE_KEY` in `~/.hermes/.env` (not wired yet)
+- Optional live trading: `POLYMARKET_PRIVATE_KEY` + `py-clob-client-v2` (`pip install 'hermes-agent[polymarket-arb]'`)
+- Optional Grok postmortems: `XAI_API_KEY` in `~/.hermes/.env`
 
 Config (optional, in `.env`):
 
@@ -138,6 +139,7 @@ See `references/dutch-book.md` for formulas and risk notes.
 ## Limitations
 
 - Gamma prices are indicative; only CLOB-verified hits are trade-ready
-- Live execution requires `py-clob-client` wiring (stub in `arb/execute.py`)
+- Live execution uses `py-clob-client-v2` behind hard gates (`ARB_ALLOW_LIVE`, etc.) — see `arb/PHASE6.md`
+- Grok postmortems: `python -m arb postmortem --grok` (human-gated proposals only)
 - Multi-outcome (>2) markets are scanned but most arb is on binary Yes/No
 - Geographic trading restrictions still apply for live orders

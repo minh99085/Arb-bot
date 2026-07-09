@@ -144,3 +144,9 @@ apps/desktop/demo/
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
+
+# Secrets — never commit API keys or key dump files
+*api*key*.txt
+*API*KEY*.txt
+xAI*.txt
+secrets/

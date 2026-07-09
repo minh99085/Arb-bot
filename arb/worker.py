@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import time
 import traceback
@@ -219,12 +220,26 @@ class ArbWorker:
 
     def tick_postmortem(self) -> dict[str, Any]:
         store = OpportunityStore(self.arb.state_db)
-        report = run_postmortem(self.arb, store, days=7, create_proposals=True)
+        use_grok = os.environ.get("ARB_WORKER_GROK", "").lower() not in {
+            "",
+            "0",
+            "false",
+            "no",
+        }
+        report = run_postmortem(
+            self.arb,
+            store,
+            days=7,
+            create_proposals=True,
+            use_grok=use_grok,
+        )
         self.status.last_postmortem_at = _now()
         return {
             "labeled": report.total_labeled,
             "proposals": report.proposals_created,
             "report": report.report_path,
+            "grok_ok": report.grok_ok,
+            "grok_path": report.grok_path,
         }
 
     def run_once(self, *, jobs: list[str] | None = None) -> dict[str, Any]:

@@ -60,7 +60,8 @@ sudo journalctl -u polymarket-arb-worker -f
 ## Safety defaults
 
 - Paper mode (`ARB_WORKER_PAPER=true`)
-- Live still requires `ARB_ALLOW_LIVE` + key + `ARB_EXEC_MODE=live` (stub)
+- Live requires `ARB_ALLOW_LIVE` + key + `ARB_EXEC_MODE=live` (Phase 6)
+- Optional Grok on postmortem ticks: `ARB_WORKER_GROK=true`
 - Kill switch honored via `ArbConfig`
 - PID + `worker_status.json` under `ARB_STATE_DIR`
 

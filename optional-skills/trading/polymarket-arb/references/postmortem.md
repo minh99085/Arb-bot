@@ -25,16 +25,23 @@ Runs **after** the money loop. Deterministic labeling + threshold proposals.
 
 ```bash
 python -m arb postmortem --days 7
+python -m arb postmortem --days 7 --grok   # needs XAI_API_KEY; still human-gated
 python -m arb proposals
 python -m arb approve <proposal_id>
 python -m arb reject <proposal_id>
 python -m arb proposals --env-snippet   # copy into .env manually
 ```
 
-Cron (no LLM):
+Cron (deterministic, no LLM):
 
 ```bash
 python3 optional-skills/trading/polymarket-arb/scripts/run_postmortem.py
+```
+
+Optional Grok cron (costs tokens; set `XAI_API_KEY`):
+
+```bash
+python -m arb postmortem --days 7 --grok
 ```
 
 ```text

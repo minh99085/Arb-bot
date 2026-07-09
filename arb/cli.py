@@ -376,11 +376,13 @@ def cmd_postmortem(args: argparse.Namespace) -> int:
 
     config = ArbConfig.from_env()
     store = OpportunityStore(config.state_db)
+    use_grok = bool(getattr(args, "grok", False))
     report = run_postmortem(
         config,
         store,
         days=args.days,
         create_proposals=not args.no_proposals,
+        use_grok=use_grok,
     )
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
@@ -394,6 +396,12 @@ def cmd_postmortem(args: argparse.Namespace) -> int:
     print(f"  Verified-like:  {report.verified_hits}")
     print(f"  Dataset:        {report.dataset_path}")
     print(f"  Report:         {report.report_path}")
+    if report.grok_ok is not None:
+        print(f"  Grok:           {'ok' if report.grok_ok else 'failed'} ({report.grok_path})")
+        if report.grok_error:
+            print(f"  Grok error:     {report.grok_error}")
+        if report.grok_proposals:
+            print(f"  Grok proposals: {', '.join(report.grok_proposals)}")
     if report.proposals_created:
         print(f"  Proposals:      {', '.join(report.proposals_created)}")
         print("  Next: python -m arb proposals && python -m arb approve <id>")
@@ -580,6 +588,11 @@ def build_parser() -> argparse.ArgumentParser:
     post = sub.add_parser("postmortem", help="Label history + propose thresholds (Phase 4)")
     post.add_argument("--days", type=int, default=7)
     post.add_argument("--no-proposals", action="store_true")
+    post.add_argument(
+        "--grok",
+        action="store_true",
+        help="Ask Grok (xAI) for offline analysis + human-gated proposals (needs XAI_API_KEY)",
+    )
     post.add_argument("--json", action="store_true")
     post.set_defaults(func=cmd_postmortem)
 

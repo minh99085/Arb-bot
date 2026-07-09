@@ -28,6 +28,10 @@ class PostmortemReport:
     notes: list[str] = field(default_factory=list)
     dataset_path: str | None = None
     report_path: str | None = None
+    grok_ok: bool | None = None
+    grok_path: str | None = None
+    grok_proposals: list[str] = field(default_factory=list)
+    grok_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +48,10 @@ class PostmortemReport:
             "notes": self.notes,
             "dataset_path": self.dataset_path,
             "report_path": self.report_path,
+            "grok_ok": self.grok_ok,
+            "grok_path": self.grok_path,
+            "grok_proposals": self.grok_proposals,
+            "grok_error": self.grok_error,
         }
 
 
@@ -140,6 +148,7 @@ def run_postmortem(
     *,
     days: int = 7,
     create_proposals: bool = True,
+    use_grok: bool = False,
 ) -> PostmortemReport:
     labeled = label_history(store, days=days)
     counts = label_counts(labeled)
@@ -175,6 +184,55 @@ def run_postmortem(
     if total == 0:
         notes.append("No labeled rows in window — keep Phase 1/2/3 loops collecting data.")
 
+    grok_ok: bool | None = None
+    grok_path: str | None = None
+    grok_proposals: list[str] = []
+    grok_error: str | None = None
+    if use_grok:
+        from arb.grok import analyze_postmortem, apply_grok_proposals, write_grok_analysis
+
+        sample = [
+            {
+                "label": r.label.value if hasattr(r.label, "value") else str(r.label),
+                "reject_reason": r.reject_reason,
+                "label_detail": getattr(r, "label_detail", None),
+                "realized_pnl": r.realized_pnl,
+                "edge_bps": getattr(r, "edge_bps", None),
+                "state": getattr(r, "state", None),
+            }
+            for r in labeled[:30]
+        ]
+        summary = {
+            "days": days,
+            "total_labeled": total,
+            "label_counts": counts,
+            "false_positive_rate": round(fp / total, 4) if total else 0.0,
+            "ws_evaporation_rate": round(ws_evap / total, 4) if total else 0.0,
+            "paper_pnl": round(paper_pnl, 6),
+            "verified_hits": verified,
+            "deterministic_proposals": proposal_ids,
+        }
+        grok = analyze_postmortem(
+            config,
+            report_summary=summary,
+            labeled_sample=sample,
+            use_grok=True,
+        )
+        grok_ok = grok.ok
+        grok_error = grok.error
+        path = write_grok_analysis(config, grok, days=days)
+        grok_path = str(path)
+        if grok.ok and create_proposals:
+            grok_proposals = apply_grok_proposals(config, grok)
+            if grok_proposals:
+                notes.append(
+                    f"Grok added {len(grok_proposals)} proposal(s) (still human-gated)."
+                )
+            else:
+                notes.append("Grok analysis complete — no new proposals.")
+        elif not grok.ok:
+            notes.append(f"Grok skipped/failed: {grok.error}")
+
     report = PostmortemReport(
         days=days,
         generated_at=datetime.now(timezone.utc).isoformat(),
@@ -185,9 +243,13 @@ def run_postmortem(
         ws_evaporation_rate=round(ws_evap / total, 4) if total else 0.0,
         paper_pnl=round(paper_pnl, 6),
         verified_hits=verified,
-        proposals_created=proposal_ids,
+        proposals_created=proposal_ids + grok_proposals,
         notes=notes,
         dataset_path=str(dataset_path),
+        grok_ok=grok_ok,
+        grok_path=grok_path,
+        grok_proposals=grok_proposals,
+        grok_error=grok_error,
     )
 
     report_path = _write_report(config, report)
@@ -233,6 +295,20 @@ def _write_report(config: ArbConfig, report: PostmortemReport) -> Path:
         lines.append("```")
     else:
         lines.append("- None")
+    lines += ["", "## Grok (optional intelligence)", ""]
+    if report.grok_ok is None:
+        lines.append("- Not requested (pass `--grok` to enable).")
+    elif report.grok_ok:
+        lines.append(f"- OK — analysis: `{report.grok_path}`")
+        if report.grok_proposals:
+            for pid in report.grok_proposals:
+                lines.append(f"- Grok proposal `{pid}` (pending human review)")
+        else:
+            lines.append("- No Grok proposals.")
+    else:
+        lines.append(f"- Failed/skipped: {report.grok_error}")
+        if report.grok_path:
+            lines.append(f"- Log: `{report.grok_path}`")
     lines += ["", "## Notes", ""]
     for note in report.notes:
         lines.append(f"- {note}")
@@ -253,6 +329,7 @@ def _append_ledger(config: ArbConfig, report: PostmortemReport) -> None:
         f"- WS evaporate: {report.ws_evaporation_rate:.1%}\n"
         f"- Paper PnL: ${report.paper_pnl:.4f}\n"
         f"- Proposals: {', '.join(report.proposals_created) or 'none'}\n"
+        f"- Grok: {report.grok_ok} ({report.grok_path or 'n/a'})\n"
         f"- Report: {report.report_path}\n\n"
         "---\n\n"
     )
