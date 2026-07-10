@@ -39,6 +39,23 @@ services:
       - ${USERPROFILE}/.hermes:/data
     command: ["python", "-m", "arb", "worker", "run", "--paper", "--ws"]
 
+  arb-dashboard:
+    image: polymarket-arb:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.arb
+    container_name: polymarket-arb-dashboard
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      HERMES_HOME: /data
+      ARB_DASHBOARD_HOST: "0.0.0.0"
+      ARB_DASHBOARD_PORT: "8787"
+    volumes:
+      - ${USERPROFILE}/.hermes:/data
+    command: ["python", "-m", "arb", "dashboard", "--host", "0.0.0.0", "--port", "8787", "--trades", "50"]
+
   arb-alpha:
     profiles: ["tools"]
     image: polymarket-arb:local

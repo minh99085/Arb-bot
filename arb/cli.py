@@ -121,6 +121,19 @@ def cmd_alpha(args: argparse.Namespace) -> int:
     return 0 if result.clob_checked >= 10 else 1
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    from arb.dashboard import run_dashboard
+
+    config = ArbConfig.from_env()
+    run_dashboard(
+        config,
+        host=args.host,
+        port=args.port,
+        trade_limit=args.trades,
+    )
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     config = ArbConfig.from_env()
     store = OpportunityStore(config.state_db)
@@ -593,6 +606,12 @@ def build_parser() -> argparse.ArgumentParser:
     alpha.add_argument("--limit", type=int, default=None, help="Cap universe markets fetched")
     alpha.add_argument("--json", action="store_true")
     alpha.set_defaults(func=cmd_alpha)
+
+    dash = sub.add_parser("dashboard", help="Web UI: PnL + last 50 trades (click to expand)")
+    dash.add_argument("--host", default=None, help="Bind host (default 127.0.0.1, use 0.0.0.0 in Docker)")
+    dash.add_argument("--port", type=int, default=None, help="Port (default 8787)")
+    dash.add_argument("--trades", type=int, default=50, help="Trade history rows")
+    dash.set_defaults(func=cmd_dashboard)
 
     status = sub.add_parser("status", help="Show stored opportunities / positions")
     status.add_argument("--limit", type=int, default=20)

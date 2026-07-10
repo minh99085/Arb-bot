@@ -474,6 +474,101 @@ class OpportunityStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_trades(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Fills joined with opportunity context for dashboard/history."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    f.id AS fill_id,
+                    f.opportunity_id,
+                    f.filled_at,
+                    f.mode,
+                    f.size_usd,
+                    f.fill_total,
+                    f.fees_usd,
+                    f.slippage_usd,
+                    f.expected_pnl,
+                    f.realized_pnl,
+                    f.fill_prices,
+                    o.question,
+                    o.slug,
+                    o.kind,
+                    o.edge_bps,
+                    o.total,
+                    o.source,
+                    o.state,
+                    o.condition_id,
+                    o.detected_at,
+                    o.ask_depth,
+                    o.bid_depth,
+                    o.payload
+                FROM fills f
+                JOIN opportunities o ON o.id = f.opportunity_id
+                ORDER BY f.filled_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["fill_prices_list"] = json.loads(item.get("fill_prices") or "[]")
+            except json.JSONDecodeError:
+                item["fill_prices_list"] = []
+            try:
+                payload = json.loads(item.get("payload") or "{}")
+                item["outcomes"] = payload.get("outcomes") or []
+                item["token_ids"] = payload.get("token_ids") or []
+            except json.JSONDecodeError:
+                item["outcomes"] = []
+                item["token_ids"] = []
+            item.pop("payload", None)
+            out.append(item)
+        return out
+
+    def trade_summary(self) -> dict[str, Any]:
+        """Aggregate PnL stats for dashboard."""
+        with self._connect() as conn:
+            totals = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS fill_count,
+                    COALESCE(SUM(expected_pnl), 0) AS expected_sum,
+                    COALESCE(SUM(realized_pnl), 0) AS realized_sum,
+                    COALESCE(SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END), 0) AS wins,
+                    COALESCE(SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END), 0) AS losses
+                FROM fills
+                """
+            ).fetchone()
+            today = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS fill_count,
+                    COALESCE(SUM(realized_pnl), 0) AS realized_sum
+                FROM fills
+                WHERE date(filled_at) = date('now') AND realized_pnl IS NOT NULL
+                """
+            ).fetchone()
+            by_state = conn.execute(
+                """
+                SELECT state, COUNT(*) AS c FROM opportunities
+                GROUP BY state
+                """
+            ).fetchall()
+        return {
+            "fill_count": int(totals["fill_count"] or 0),
+            "expected_pnl_sum": round(float(totals["expected_sum"] or 0), 6),
+            "realized_pnl_sum": round(float(totals["realized_sum"] or 0), 6),
+            "wins": int(totals["wins"] or 0),
+            "losses": int(totals["losses"] or 0),
+            "fills_today": int(today["fill_count"] or 0),
+            "realized_pnl_today": round(float(today["realized_sum"] or 0), 6),
+            "open_positions": self.count_open(),
+            "by_state": {row["state"]: int(row["c"]) for row in by_state},
+        }
+
     def count_open(self) -> int:
         placeholders = ",".join("?" * len(OPEN_POSITION_STATES))
         with self._connect() as conn:

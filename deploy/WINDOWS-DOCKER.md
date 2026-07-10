@@ -39,6 +39,8 @@ That’s it. The script will:
 | Status | `.\STATUS.ps1` |
 | Stop | `.\STOP.ps1` |
 
+(Run from repo root `Arb-bot\`, or from `deploy\`.)
+
 ## If PowerShell blocks the script
 
 ```powershell

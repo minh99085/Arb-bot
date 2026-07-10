@@ -56,6 +56,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "      Worker started (container: polymarket-arb-paper)" -ForegroundColor Green
 
+Write-Host "[3b/4] Starting dashboard on http://localhost:8787 ..." -ForegroundColor Yellow
+docker compose -f $ComposeFile up -d arb-dashboard
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "      Dashboard failed to start (worker is still running)." -ForegroundColor DarkYellow
+} else {
+    Write-Host "      Dashboard OK - open http://localhost:8787 in your browser" -ForegroundColor Green
+}
+
 Write-Host "[4/4] Running alpha pre-flight..." -ForegroundColor Yellow
 docker compose -f $ComposeFile --profile tools run --rm arb-alpha
 if ($LASTEXITCODE -ne 0) {
@@ -67,6 +75,7 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host " BOT IS RUNNING (paper mode)" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
+Write-Host "  Dashboard:        http://localhost:8787"
 Write-Host "  View live logs:   .\LOGS.ps1"
 Write-Host "  Check status:     .\STATUS.ps1"
 Write-Host "  Stop bot:         .\STOP.ps1"
