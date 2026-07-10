@@ -1,0 +1,25 @@
+# Slim image for Polymarket arb bot (paper/live worker) — not the full Hermes gateway stack.
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HERMES_HOME=/data
+
+WORKDIR /app
+
+# CA certs for HTTPS to Gamma/CLOB APIs
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . .
+
+# Install arb CLI + WS dependency (Phase 3 re-verify)
+RUN pip install --upgrade pip \
+    && pip install -e . websockets==15.0.1
+
+VOLUME ["/data"]
+
+# Default: paper worker with WS re-verify (override in compose)
+CMD ["python", "-m", "arb", "worker", "run", "--paper", "--ws"]

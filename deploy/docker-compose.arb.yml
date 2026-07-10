@@ -1,0 +1,84 @@
+# Polymarket arb bot — paper worker (Windows / Mac / Linux Docker Desktop)
+#
+# From repo root:
+#   copy deploy\arb.docker.env.example arb.docker.env
+#   docker compose -f deploy/docker-compose.arb.yml up -d --build
+#
+# Logs:
+#   docker compose -f deploy/docker-compose.arb.yml logs -f arb-worker
+#
+# One-shot alpha pre-flight:
+#   docker compose -f deploy/docker-compose.arb.yml run --rm arb-alpha
+
+services:
+  arb-worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.arb
+    image: polymarket-arb:local
+    container_name: polymarket-arb-paper
+    restart: unless-stopped
+    env_file:
+      - path: ../arb.docker.env
+        required: false
+    environment:
+      HERMES_HOME: /data
+      ARB_STUDY_MODE: "false"
+      ARB_EXEC_MODE: paper
+      ARB_DRY_RUN: "true"
+      ARB_KILL_SWITCH: "false"
+      ARB_ALLOW_LIVE: "false"
+      ARB_SCAN_SOURCE: events
+      ARB_MIN_EDGE_BPS: "30"
+      ARB_TAKER_FEE_BPS: "10"
+      ARB_VERIFY_TOP_N: "40"
+      ARB_WORKER_USE_WS: "true"
+      ARB_WORKER_PAPER: "true"
+    volumes:
+      # Windows Docker Desktop: %USERPROFILE%\.hermes → /data
+      - ${USERPROFILE}/.hermes:/data
+    command: ["python", "-m", "arb", "worker", "run", "--paper", "--ws"]
+
+  arb-alpha:
+    profiles: ["tools"]
+    image: polymarket-arb:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.arb
+    env_file:
+      - path: ../arb.docker.env
+        required: false
+    environment:
+      HERMES_HOME: /data
+    volumes:
+      - ${USERPROFILE}/.hermes:/data
+    command: ["python", "-m", "arb", "alpha", "--liquid", "200"]
+    stdin_open: false
+    tty: false
+
+  arb-scan:
+    profiles: ["tools"]
+    image: polymarket-arb:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.arb
+    env_file:
+      - path: ../arb.docker.env
+        required: false
+    environment:
+      HERMES_HOME: /data
+    volumes:
+      - ${USERPROFILE}/.hermes:/data
+    command: ["python", "-m", "arb", "scan", "--study", "--top", "10"]
+
+  arb-status:
+    profiles: ["tools"]
+    image: polymarket-arb:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.arb
+    environment:
+      HERMES_HOME: /data
+    volumes:
+      - ${USERPROFILE}/.hermes:/data
+    command: ["python", "-m", "arb", "status"]
