@@ -1,95 +1,62 @@
-# Windows + Docker — paper trading
+# Windows + Docker — paper trading (one command)
 
-## Prerequisites
+## What you need
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) running (WSL2 backend recommended)
-- Repo cloned (GitHub Desktop → e.g. `C:\Users\You\Documents\Arb-bot`)
-- **PowerShell** or **Git Bash**
+1. [Docker Desktop](https://www.docker.com/products/docker-desktop/) — **running**
+2. Repo cloned — e.g. `C:\Users\tieut\Arb-bot`
 
-## 1. Create host data folder
+## Start the bot (one command)
 
-PowerShell:
-
-```powershell
-New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.hermes"
-```
-
-Optional paper config on the host (mounted into the container):
+1. Open **PowerShell**
+2. Go to the **`deploy`** folder:
 
 ```powershell
-@"
-ARB_STUDY_MODE=false
-ARB_EXEC_MODE=paper
-ARB_DRY_RUN=true
-ARB_KILL_SWITCH=false
-ARB_ALLOW_LIVE=false
-ARB_MIN_EDGE_BPS=30
-ARB_TAKER_FEE_BPS=10
-"@ | Set-Content -Encoding UTF8 "$env:USERPROFILE\.hermes\.env"
+cd C:\Users\tieut\Arb-bot\deploy
 ```
 
-## 2. Build and start paper worker
-
-Open PowerShell in the **repo root** (`Arb-bot`):
+3. Run:
 
 ```powershell
-cd C:\Users\You\Documents\Arb-bot
-docker compose -f deploy/docker-compose.arb.yml up -d --build
+.\START.ps1
 ```
 
-First build may take a few minutes.
+**Or** double-click `START.bat` in File Explorer (same folder).
 
-## 3. Pre-flight (alpha scan)
+That’s it. The script will:
+
+- Create `%USERPROFILE%\.hermes\.env` (paper config) if missing  
+- Build the Docker image (first run only, ~3–5 min)  
+- Start the 24/7 paper worker with WebSocket re-verify  
+- Run a quick alpha pre-flight  
+
+## After it’s running
+
+| What | Command (from `deploy` folder) |
+|------|--------------------------------|
+| Live logs | `.\LOGS.ps1` |
+| Status | `.\STATUS.ps1` |
+| Stop | `.\STOP.ps1` |
+
+## If PowerShell blocks the script
 
 ```powershell
-docker compose -f deploy/docker-compose.arb.yml --profile tools run --rm arb-alpha
+powershell -ExecutionPolicy Bypass -File .\START.ps1
 ```
 
-## 4. Watch logs
+Or use `START.bat` instead.
 
-```powershell
-docker compose -f deploy/docker-compose.arb.yml logs -f arb-worker
-```
-
-You should see `[scan]`, `[loop]`, `[reconcile]` lines every few minutes.
-
-## 5. Check status
-
-```powershell
-docker compose -f deploy/docker-compose.arb.yml --profile tools run --rm arb-status
-```
-
-State DB on host:
+## Data location
 
 ```
-%USERPROFILE%\.hermes\profiles\polymarket-arb\state\opportunities.sqlite
+%USERPROFILE%\.hermes\profiles\polymarket-arb\state\
 ```
 
-## Useful commands
+## After `git pull`
 
-| Action | Command |
-|--------|---------|
-| Stop | `docker compose -f deploy/docker-compose.arb.yml down` |
-| Restart | `docker compose -f deploy/docker-compose.arb.yml restart arb-worker` |
-| Rebuild after `git pull` | `docker compose -f deploy/docker-compose.arb.yml up -d --build` |
-| One-shot scan | `docker compose -f deploy/docker-compose.arb.yml --profile tools run --rm arb-scan` |
+Run `.\START.ps1` again — it rebuilds and restarts automatically.
 
-## Troubleshooting
+## Notes
 
-**`USERPROFILE` volume empty on Linux containers**  
-Docker Desktop on Windows should map `%USERPROFILE%\.hermes` correctly. If status shows no DB, verify:
-
-```powershell
-dir $env:USERPROFILE\.hermes
-```
-
-**Build fails**  
-Ensure you run commands from the repo root and Docker Desktop is started.
-
-**No alpha in logs**  
-Normal — markets are often efficient. The worker catches fleeting arbs; keep it running.
-
-## Not included
-
-- This compose runs **paper only** by default (`ARB_ALLOW_LIVE=false`).
-- The main repo `docker-compose.yml` is the Hermes **gateway** — not required for arb paper trading.
+- **Paper only** — no wallet key needed  
+- **No alpha in logs** is normal; markets are often efficient  
+- Main repo `docker-compose.yml` is Hermes gateway — **ignore it**; use only `deploy/START.ps1`
