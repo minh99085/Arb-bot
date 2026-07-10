@@ -29,11 +29,19 @@ services:
       ARB_KILL_SWITCH: "false"
       ARB_ALLOW_LIVE: "false"
       ARB_SCAN_SOURCE: events
-      ARB_MIN_EDGE_BPS: "30"
+      ARB_MIN_EDGE_BPS: "10"
       ARB_TAKER_FEE_BPS: "10"
-      ARB_VERIFY_TOP_N: "40"
+      ARB_VERIFY_TOP_N: "100"
+      ARB_MIN_BOOK_DEPTH: "2"
+      ARB_MAX_POSITION_USD: "15"
+      ARB_MAX_OPEN_POSITIONS: "15"
+      ARB_MAX_DAILY_TRADES: "100"
       ARB_WORKER_USE_WS: "true"
       ARB_WORKER_PAPER: "true"
+      ARB_WORKER_SCAN_SEC: "120"
+      ARB_WORKER_LOOP_SEC: "180"
+      ARB_WORKER_TRADE_LIMIT: "15"
+      ARB_SELF_TUNE: "true"
     volumes:
       # Windows Docker Desktop: %USERPROFILE%\.hermes → /data
       - ${USERPROFILE}/.hermes:/data

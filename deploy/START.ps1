@@ -35,16 +35,33 @@ if (-not (Test-Path $EnvFile)) {
         "ARB_DRY_RUN=true",
         "ARB_KILL_SWITCH=false",
         "ARB_ALLOW_LIVE=false",
-        "ARB_MIN_EDGE_BPS=30",
+        "ARB_MIN_EDGE_BPS=10",
         "ARB_TAKER_FEE_BPS=10",
-        "ARB_VERIFY_TOP_N=40",
+        "ARB_VERIFY_TOP_N=100",
+        "ARB_MIN_BOOK_DEPTH=2",
+        "ARB_MAX_POSITION_USD=15",
+        "ARB_MAX_OPEN_POSITIONS=15",
+        "ARB_MAX_DAILY_TRADES=100",
+        "ARB_MAX_DAILY_LOSS_USD=75",
+        "ARB_PAPER_SLIPPAGE_BPS=5",
+        "ARB_WORKER_SCAN_SEC=120",
+        "ARB_WORKER_LOOP_SEC=180",
+        "ARB_WORKER_TRADE_LIMIT=15",
         "ARB_WORKER_USE_WS=true",
-        "ARB_WORKER_PAPER=true"
+        "ARB_WORKER_PAPER=true",
+        "ARB_SELF_TUNE=true",
+        "ARB_SELF_TUNE_MAX_CHANGES_PER_DAY=20"
     )
     $envLines | Set-Content -Path $EnvFile -Encoding UTF8
     Write-Host ("      Created " + $EnvFile) -ForegroundColor Green
 } else {
     Write-Host ("      Using existing " + $EnvFile) -ForegroundColor Green
+    # Ensure self-tune is on for existing installs
+    $raw = Get-Content $EnvFile -Raw
+    if ($raw -notmatch "ARB_SELF_TUNE=") {
+        Add-Content -Path $EnvFile -Value "`nARB_SELF_TUNE=true`nARB_MIN_EDGE_BPS=10`nARB_VERIFY_TOP_N=100`nARB_WORKER_TRADE_LIMIT=15`nARB_WORKER_SCAN_SEC=120`nARB_WORKER_LOOP_SEC=180"
+        Write-Host "      Appended high-activity + self-tune defaults" -ForegroundColor Green
+    }
 }
 
 Write-Host "[3/4] Building image (first time ~3-5 min) and starting worker..." -ForegroundColor Yellow
@@ -76,6 +93,7 @@ Write-Host " BOT IS RUNNING (paper mode)" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Dashboard:        http://localhost:8787"
+Write-Host "  Self-tune:        on (auto-adjusts thresholds every ~30 min)"
 Write-Host "  View live logs:   .\LOGS.ps1"
 Write-Host "  Check status:     .\STATUS.ps1"
 Write-Host "  Stop bot:         .\STOP.ps1"

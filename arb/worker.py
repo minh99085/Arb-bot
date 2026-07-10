@@ -28,16 +28,18 @@ def _now() -> str:
 class WorkerConfig:
     """Schedule for the standalone worker (seconds)."""
 
-    scan_interval_sec: float = 300.0
-    loop_interval_sec: float = 900.0
-    postmortem_interval_sec: float = 86400.0
-    reconcile_interval_sec: float = 3600.0
+    scan_interval_sec: float = 120.0
+    loop_interval_sec: float = 180.0
+    postmortem_interval_sec: float = 21600.0
+    reconcile_interval_sec: float = 900.0
+    self_tune_interval_sec: float = 1800.0
     scan_limit: int | None = None
-    trade_limit: int = 5
-    use_ws: bool = False
-    ws_sec: float = 15.0
+    trade_limit: int = 15
+    use_ws: bool = True
+    ws_sec: float = 12.0
     paper: bool = True
     run_postmortem: bool = True
+    run_self_tune: bool = True
     heartbeat_sec: float = 60.0
 
     @classmethod
@@ -61,16 +63,18 @@ class WorkerConfig:
             return raw.lower() not in {"0", "false", "no"}
 
         return cls(
-            scan_interval_sec=_f("ARB_WORKER_SCAN_SEC", 300.0),
-            loop_interval_sec=_f("ARB_WORKER_LOOP_SEC", 900.0),
-            postmortem_interval_sec=_f("ARB_WORKER_POSTMORTEM_SEC", 86400.0),
-            reconcile_interval_sec=_f("ARB_WORKER_RECONCILE_SEC", 3600.0),
+            scan_interval_sec=_f("ARB_WORKER_SCAN_SEC", 120.0),
+            loop_interval_sec=_f("ARB_WORKER_LOOP_SEC", 180.0),
+            postmortem_interval_sec=_f("ARB_WORKER_POSTMORTEM_SEC", 21600.0),
+            reconcile_interval_sec=_f("ARB_WORKER_RECONCILE_SEC", 900.0),
+            self_tune_interval_sec=_f("ARB_WORKER_SELF_TUNE_SEC", 1800.0),
             scan_limit=_i("ARB_WORKER_SCAN_LIMIT", None),
-            trade_limit=int(os.environ.get("ARB_WORKER_TRADE_LIMIT", "5")),
-            use_ws=_b("ARB_WORKER_USE_WS", False),
-            ws_sec=_f("ARB_WORKER_WS_SEC", 15.0),
+            trade_limit=int(os.environ.get("ARB_WORKER_TRADE_LIMIT", "15")),
+            use_ws=_b("ARB_WORKER_USE_WS", True),
+            ws_sec=_f("ARB_WORKER_WS_SEC", 12.0),
             paper=_b("ARB_WORKER_PAPER", True),
             run_postmortem=_b("ARB_WORKER_POSTMORTEM", True),
+            run_self_tune=_b("ARB_SELF_TUNE", True),
             heartbeat_sec=_f("ARB_WORKER_HEARTBEAT_SEC", 60.0),
         )
 
@@ -84,10 +88,12 @@ class WorkerStatus:
     last_loop_at: str | None = None
     last_reconcile_at: str | None = None
     last_postmortem_at: str | None = None
+    last_self_tune_at: str | None = None
     last_error: str | None = None
     scans: int = 0
     loops: int = 0
     alerts: int = 0
+    self_tunes: int = 0
     stop_requested: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,7 +120,19 @@ class ArbWorker:
         self._next_loop = 0.0
         self._next_reconcile = 0.0
         self._next_postmortem = 0.0
+        self._next_self_tune = 0.0
         self._next_heartbeat = 0.0
+
+    def _reload_config(self) -> ArbConfig:
+        """Merge self_tune.json overrides onto the worker's ArbConfig in place."""
+        from arb.self_tune import apply_overrides_to_config, load_overrides
+
+        if self.arb.self_tune or self.wc.run_self_tune:
+            self.arb = apply_overrides_to_config(self.arb)
+        ov = load_overrides(self.arb)
+        if "ARB_WORKER_TRADE_LIMIT" in ov:
+            self.wc.trade_limit = int(round(ov["ARB_WORKER_TRADE_LIMIT"]))
+        return self.arb
 
     @property
     def status_path(self) -> Path:
@@ -151,7 +169,7 @@ class ArbWorker:
             self.pid_path.unlink()
 
     def tick_scan(self) -> dict[str, Any]:
-        cfg = self.arb.with_overrides(max_markets=self.wc.scan_limit)
+        cfg = self._reload_config().with_overrides(max_markets=self.wc.scan_limit)
         result = run_scan(cfg, gamma_only=False, persist=True)
         self.status.scans += 1
         self.status.last_scan_at = _now()
@@ -170,10 +188,11 @@ class ArbWorker:
         """One money-loop turn: scan → optional WS → paper trade → reconcile."""
         from arb.execute import execute_batch
 
-        cfg = self.arb.with_overrides(
+        base = self._reload_config()
+        cfg = base.with_overrides(
             max_markets=self.wc.scan_limit,
-            study_mode=False if self.wc.paper else self.arb.study_mode,
-            exec_mode=ExecMode.PAPER if self.wc.paper else self.arb.exec_mode,
+            study_mode=False if self.wc.paper else base.study_mode,
+            exec_mode=ExecMode.PAPER if self.wc.paper else base.exec_mode,
         )
         result = run_scan(cfg, gamma_only=False, persist=True)
         store = OpportunityStore(cfg.state_db)
@@ -213,13 +232,26 @@ class ArbWorker:
         }
 
     def tick_reconcile(self) -> dict[str, Any]:
-        store = OpportunityStore(self.arb.state_db)
-        report = reconcile(self.arb, store, settle_paper=True)
+        cfg = self._reload_config()
+        store = OpportunityStore(cfg.state_db)
+        report = reconcile(cfg, store, settle_paper=True)
         self.status.last_reconcile_at = _now()
         return report.to_dict()
 
+    def tick_self_tune(self) -> dict[str, Any]:
+        from arb.self_tune import run_self_tune
+
+        cfg = self._reload_config()
+        store = OpportunityStore(cfg.state_db)
+        report = run_self_tune(cfg, store, days=3)
+        self.status.last_self_tune_at = _now()
+        self.status.self_tunes += 1
+        # Reload again so next ticks see new overrides
+        self._reload_config()
+        return report.to_dict()
+
     def tick_postmortem(self) -> dict[str, Any]:
-        store = OpportunityStore(self.arb.state_db)
+        store = OpportunityStore(self._reload_config().state_db)
         use_grok = os.environ.get("ARB_WORKER_GROK", "").lower() not in {
             "",
             "0",
@@ -256,6 +288,8 @@ class ArbWorker:
                     out["jobs"]["reconcile"] = self.tick_reconcile()
                 elif job == "postmortem":
                     out["jobs"]["postmortem"] = self.tick_postmortem()
+                elif job in {"self-tune", "self_tune", "tune"}:
+                    out["jobs"]["self_tune"] = self.tick_self_tune()
                 else:
                     out["jobs"][job] = {"error": f"unknown job {job}"}
             except Exception as exc:
@@ -277,9 +311,14 @@ class ArbWorker:
         self._next_loop = now + min(60.0, self.wc.loop_interval_sec)
         self._next_reconcile = now + min(120.0, self.wc.reconcile_interval_sec)
         self._next_postmortem = now + min(300.0, self.wc.postmortem_interval_sec)
+        self._next_self_tune = now + min(90.0, self.wc.self_tune_interval_sec)
         self._next_heartbeat = now
         self.write_status()
         print(f"ArbWorker started pid={self.pid_path.read_text().strip()} state={self.arb.state_root}")
+        print(
+            f"  cadence: scan={self.wc.scan_interval_sec}s loop={self.wc.loop_interval_sec}s "
+            f"self_tune={self.wc.self_tune_interval_sec}s trade_limit={self.wc.trade_limit}"
+        )
 
         try:
             while not self.status.stop_requested:
@@ -297,6 +336,11 @@ class ArbWorker:
                         info = self.tick_reconcile()
                         print(f"[reconcile] fills={info.get('fills')} pnl={info.get('realized_pnl_sum')}")
                         self._next_reconcile = now + self.wc.reconcile_interval_sec
+                    if self.wc.run_self_tune and now >= self._next_self_tune:
+                        info = self.tick_self_tune()
+                        applied = info.get("applied") or []
+                        print(f"[self-tune] applied={len(applied)} overrides={info.get('overrides')}")
+                        self._next_self_tune = now + self.wc.self_tune_interval_sec
                     if self.wc.run_postmortem and now >= self._next_postmortem:
                         info = self.tick_postmortem()
                         print(f"[postmortem] {info}")
@@ -317,6 +361,7 @@ class ArbWorker:
                     self._next_scan,
                     self._next_loop,
                     self._next_reconcile,
+                    self._next_self_tune if self.wc.run_self_tune else now + 3600,
                     self._next_postmortem if self.wc.run_postmortem else now + 3600,
                     self._next_heartbeat,
                 )

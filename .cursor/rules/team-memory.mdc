@@ -48,5 +48,6 @@ Build **one phase at a time**. Do not start the next phase until the previous ph
 5. **Phase 5 — 24/7 ops** — DONE. Standalone `arb worker` daemon + systemd/cron/GH Actions templates. Hermes optional for alerts only.
 6. **Phase 6 — Grok + live CLOB** — DONE. `arb/grok.py` (postmortem `--grok`) + `arb/clob_live.py` (`py-clob-client-v2`), hard-gated.
 7. **Phase 7 — Alpha dashboard** — DONE. `python -m arb alpha`, VPS profile `deploy/vps.env.example`, scanner pagination fix.
+6. **Phase 8 — High activity + self-tune** — DONE. Aggressive paper defaults; `arb/self_tune.py` auto-applies bounded threshold learning on a worker timer.
 
-Hot path is deterministic. LLM only on the intelligence plane. Scanner never grades its own signals.
+Hot path is deterministic. LLM only on the intelligence plane (optional Grok). Self-tune is rule-based and bounded — never enables live or disables kill switch. Scanner never grades its own signals.

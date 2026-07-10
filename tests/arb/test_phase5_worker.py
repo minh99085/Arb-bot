@@ -16,7 +16,7 @@ def test_worker_once_scan_and_reconcile(tmp_path: Path, monkeypatch):
         exec_mode=ExecMode.PAPER,
         max_markets=0,
     )
-    wc = WorkerConfig(scan_limit=0, paper=True, run_postmortem=False)
+    wc = WorkerConfig(scan_limit=0, paper=True, run_postmortem=False, run_self_tune=False)
 
     # Avoid live Gamma: stub run_scan
     from arb import worker as worker_mod
@@ -44,7 +44,7 @@ def test_worker_once_loop_paper(tmp_path: Path, monkeypatch):
         min_book_depth=1.0,
         max_position_usd=10.0,
     )
-    wc = WorkerConfig(scan_limit=0, trade_limit=2, paper=True, use_ws=False)
+    wc = WorkerConfig(scan_limit=0, trade_limit=2, paper=True, use_ws=False, run_self_tune=False)
 
     from arb import worker as worker_mod
     from arb.scanner import ScanResult
@@ -84,6 +84,7 @@ def test_worker_run_forever_stops(tmp_path: Path, monkeypatch):
         postmortem_interval_sec=1000,
         heartbeat_sec=1000,
         run_postmortem=False,
+        run_self_tune=False,
     )
     sleeps = {"n": 0}
 

@@ -15,40 +15,46 @@ def _hermes_home() -> Path:
 
 @dataclass(frozen=True)
 class ArbConfig:
-    """Tunable scanner, risk, and trading thresholds."""
+    """Tunable scanner, risk, and trading thresholds.
 
-    min_edge_bps: float = 30.0
+    Defaults are intentionally aggressive for paper discovery; self_tune.json
+    and env vars can tighten or loosen further within safety rails.
+    """
+
+    min_edge_bps: float = 10.0
     taker_fee_bps: float = 10.0
     page_size: int = 100
     max_markets: int | None = None
-    verify_top_n: int = 40
+    verify_top_n: int = 100
     state_dir: Path | None = None
     dry_run: bool = True
     study_mode: bool = True
-    min_book_depth: float = 5.0
+    min_book_depth: float = 2.0
     alert_on_verified: bool = True
     # Scanner / alpha
     scan_source: str = "events"
     gamma_max_offset: int = 2000
-    liquid_scan_limit: int = 400
-    near_miss_bps: float = 15.0
-    alpha_workers: int = 8
-    # Phase 2 risk / execution
+    liquid_scan_limit: int = 800
+    near_miss_bps: float = 30.0
+    alpha_workers: int = 12
+    # Phase 2 risk / execution — high activity paper defaults
     kill_switch: bool = False
     exec_mode: ExecMode = ExecMode.PAPER
-    max_position_usd: float = 25.0
-    max_open_positions: int = 5
-    max_daily_trades: int = 20
-    max_daily_loss_usd: float = 50.0
-    paper_slippage_bps: float = 10.0
+    max_position_usd: float = 15.0
+    max_open_positions: int = 15
+    max_daily_trades: int = 100
+    max_daily_loss_usd: float = 75.0
+    paper_slippage_bps: float = 5.0
     allow_live: bool = False
     category_blocklist: tuple[str, ...] = ()
     # Phase 3 feed
     ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     ws_enabled: bool = True
-    ws_watch_sec: float = 30.0
-    ws_max_assets: int = 40
+    ws_watch_sec: float = 15.0
+    ws_max_assets: int = 80
     ws_seed_rest: bool = True
+    # Self-tune
+    self_tune: bool = True
 
     @property
     def min_edge(self) -> float:
@@ -81,7 +87,7 @@ class ArbConfig:
         return self.state_root / "metrics.json"
 
     @classmethod
-    def from_env(cls) -> ArbConfig:
+    def from_env(cls, *, apply_self_tune: bool = True) -> ArbConfig:
         def _float(name: str, default: float) -> float:
             raw = os.environ.get(name)
             if raw is None or raw == "":
@@ -112,39 +118,48 @@ class ArbConfig:
             if x.strip()
         )
         state_dir = os.environ.get("ARB_STATE_DIR")
-        return cls(
-            min_edge_bps=_float("ARB_MIN_EDGE_BPS", 30.0),
+        cfg = cls(
+            min_edge_bps=_float("ARB_MIN_EDGE_BPS", 10.0),
             taker_fee_bps=_float("ARB_TAKER_FEE_BPS", 10.0),
             page_size=int(os.environ.get("ARB_PAGE_SIZE", "100")),
             max_markets=_int("ARB_MAX_MARKETS", None),
-            verify_top_n=int(os.environ.get("ARB_VERIFY_TOP_N", "40")),
+            verify_top_n=int(os.environ.get("ARB_VERIFY_TOP_N", "100")),
             state_dir=Path(state_dir) if state_dir else None,
             dry_run=_bool("ARB_DRY_RUN", True),
             study_mode=_bool("ARB_STUDY_MODE", True),
-            min_book_depth=_float("ARB_MIN_BOOK_DEPTH", 5.0),
+            min_book_depth=_float("ARB_MIN_BOOK_DEPTH", 2.0),
             alert_on_verified=_bool("ARB_ALERT_ON_VERIFIED", True),
             kill_switch=_bool("ARB_KILL_SWITCH", False),
             exec_mode=exec_mode,
-            max_position_usd=_float("ARB_MAX_POSITION_USD", 25.0),
-            max_open_positions=int(os.environ.get("ARB_MAX_OPEN_POSITIONS", "5")),
-            max_daily_trades=int(os.environ.get("ARB_MAX_DAILY_TRADES", "20")),
-            max_daily_loss_usd=_float("ARB_MAX_DAILY_LOSS_USD", 50.0),
-            paper_slippage_bps=_float("ARB_PAPER_SLIPPAGE_BPS", 10.0),
+            max_position_usd=_float("ARB_MAX_POSITION_USD", 15.0),
+            max_open_positions=int(os.environ.get("ARB_MAX_OPEN_POSITIONS", "15")),
+            max_daily_trades=int(os.environ.get("ARB_MAX_DAILY_TRADES", "100")),
+            max_daily_loss_usd=_float("ARB_MAX_DAILY_LOSS_USD", 75.0),
+            paper_slippage_bps=_float("ARB_PAPER_SLIPPAGE_BPS", 5.0),
             allow_live=_bool("ARB_ALLOW_LIVE", False),
             category_blocklist=blocklist,
             ws_url=os.environ.get(
                 "ARB_WS_URL", "wss://ws-subscriptions-clob.polymarket.com/ws/market"
             ),
             ws_enabled=_bool("ARB_WS_ENABLED", True),
-            ws_watch_sec=_float("ARB_WS_WATCH_SEC", 30.0),
-            ws_max_assets=int(os.environ.get("ARB_WS_MAX_ASSETS", "40")),
+            ws_watch_sec=_float("ARB_WS_WATCH_SEC", 15.0),
+            ws_max_assets=int(os.environ.get("ARB_WS_MAX_ASSETS", "80")),
             ws_seed_rest=_bool("ARB_WS_SEED_REST", True),
             scan_source=(os.environ.get("ARB_SCAN_SOURCE") or "events").lower().strip(),
             gamma_max_offset=int(os.environ.get("ARB_GAMMA_MAX_OFFSET", "2000")),
-            liquid_scan_limit=int(os.environ.get("ARB_LIQUID_SCAN_LIMIT", "400")),
-            near_miss_bps=_float("ARB_NEAR_MISS_BPS", 15.0),
-            alpha_workers=int(os.environ.get("ARB_ALPHA_WORKERS", "8")),
+            liquid_scan_limit=int(os.environ.get("ARB_LIQUID_SCAN_LIMIT", "800")),
+            near_miss_bps=_float("ARB_NEAR_MISS_BPS", 30.0),
+            alpha_workers=int(os.environ.get("ARB_ALPHA_WORKERS", "12")),
+            self_tune=_bool("ARB_SELF_TUNE", True),
         )
+        if apply_self_tune and cfg.self_tune:
+            try:
+                from arb.self_tune import apply_overrides_to_config
+
+                cfg = apply_overrides_to_config(cfg)
+            except Exception:
+                pass
+        return cfg
 
     def with_overrides(
         self,

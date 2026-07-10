@@ -32,13 +32,30 @@ def build_dashboard_payload(config: ArbConfig, *, trade_limit: int = 50) -> dict
     store = OpportunityStore(config.state_db)
     summary = store.trade_summary()
     trades = store.list_trades(limit=trade_limit)
+    self_tune = None
+    try:
+        from arb.self_tune import status_dict
+
+        self_tune = status_dict(config)
+    except Exception:
+        self_tune = None
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "study_mode": config.study_mode,
         "exec_mode": config.exec_mode.value,
+        "thresholds": {
+            "min_edge_bps": config.min_edge_bps,
+            "verify_top_n": config.verify_top_n,
+            "max_position_usd": config.max_position_usd,
+            "max_open_positions": config.max_open_positions,
+            "max_daily_trades": config.max_daily_trades,
+            "min_book_depth": config.min_book_depth,
+            "ws_watch_sec": config.ws_watch_sec,
+        },
         "summary": summary,
         "trades": trades,
         "worker": _worker_status(config),
+        "self_tune": self_tune,
         "state_db": str(config.state_db),
     }
 
@@ -157,6 +174,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <h1>Polymarket Arb Dashboard</h1>
     <p class="sub">Paper / live trade PnL &middot; auto-refresh 30s &middot; click a row to expand</p>
     <div class="cards" id="cards"></div>
+    <div class="section-title">Live thresholds <span class="badge" id="tune-badge">self-tune</span></div>
+    <div class="cards" id="thresh"></div>
     <div class="section-title">Trade history <span class="badge" id="trade-count">last 50</span></div>
     <div id="table-wrap"></div>
     <p class="refresh" id="meta"></p>
@@ -181,6 +200,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         ["Open positions", String(s.open_positions || 0), ""],
       ];
       document.getElementById("cards").innerHTML = cards.map(([label, val, cls]) =>
+        `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${val}</div></div>`
+      ).join("");
+
+      const t = data.thresholds || {};
+      const st = data.self_tune || {};
+      document.getElementById("tune-badge").textContent =
+        st.enabled === false ? "self-tune off" : "self-tune on";
+      const thresh = [
+        ["Min edge", (t.min_edge_bps != null ? t.min_edge_bps + " bps" : "-"), ""],
+        ["Verify top N", String(t.verify_top_n ?? "-"), ""],
+        ["Max size", fmtUsd(t.max_position_usd), ""],
+        ["Max open", String(t.max_open_positions ?? "-"), ""],
+        ["Daily trades", String(t.max_daily_trades ?? "-"), ""],
+        ["Book depth", String(t.min_book_depth ?? "-"), ""],
+      ];
+      document.getElementById("thresh").innerHTML = thresh.map(([label, val, cls]) =>
         `<div class="card"><div class="label">${label}</div><div class="value ${cls}">${val}</div></div>`
       ).join("");
     }

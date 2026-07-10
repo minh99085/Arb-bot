@@ -134,6 +134,52 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_self_tune(args: argparse.Namespace) -> int:
+    from arb.self_tune import run_self_tune, status_dict
+
+    config = ArbConfig.from_env(apply_self_tune=True)
+    if args.status:
+        payload = status_dict(config)
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"Self-tune enabled: {payload['enabled']}")
+            print(f"Overrides file:    {payload['path']}")
+            print(f"Overrides:         {payload['overrides'] or '(none yet)'}")
+            print(f"Effective:         {payload['effective']}")
+            if payload.get("recent_history"):
+                print("Recent:")
+                for row in payload["recent_history"][-5:]:
+                    print(f"  {row.get('at')} changes={row.get('n_changes')}")
+        return 0
+
+    store = OpportunityStore(config.state_db)
+    report = run_self_tune(
+        config,
+        store,
+        days=args.days,
+        dry_run=args.dry_run,
+        force=args.force,
+    )
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+        return 0
+    print(f"Self-tune enabled={report.enabled}")
+    print(f"Metrics: {report.metrics}")
+    if report.applied:
+        print(f"Applied {len(report.applied)} change(s):")
+        for c in report.applied:
+            print(f"  {c.key}: {c.old_value} -> {c.new_value}  ({c.rationale})")
+    else:
+        print("No changes applied.")
+    for s in report.skipped:
+        print(f"Skipped: {s}")
+    for n in report.notes:
+        print(f"Note: {n}")
+    print(f"Overrides: {report.overrides}")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     config = ArbConfig.from_env()
     store = OpportunityStore(config.state_db)
@@ -613,6 +659,14 @@ def build_parser() -> argparse.ArgumentParser:
     dash.add_argument("--trades", type=int, default=50, help="Trade history rows")
     dash.set_defaults(func=cmd_dashboard)
 
+    tune = sub.add_parser("self-tune", help="Autonomous threshold learning (bounded auto-apply)")
+    tune.add_argument("--days", type=int, default=3)
+    tune.add_argument("--dry-run", action="store_true", help="Show changes without writing")
+    tune.add_argument("--force", action="store_true", help="Ignore daily budget / disabled flag")
+    tune.add_argument("--status", action="store_true", help="Show current overrides only")
+    tune.add_argument("--json", action="store_true")
+    tune.set_defaults(func=cmd_self_tune)
+
     status = sub.add_parser("status", help="Show stored opportunities / positions")
     status.add_argument("--limit", type=int, default=20)
     status.add_argument("--state", choices=[s.value for s in OppState], default=None)
@@ -697,7 +751,7 @@ def build_parser() -> argparse.ArgumentParser:
     w_once.add_argument(
         "--jobs",
         default="scan",
-        help="Comma-separated: scan,loop,reconcile,postmortem",
+        help="Comma-separated: scan,loop,reconcile,postmortem,self-tune",
     )
     w_once.add_argument("--paper", action="store_true")
     w_once.add_argument("--ws", action="store_true")
