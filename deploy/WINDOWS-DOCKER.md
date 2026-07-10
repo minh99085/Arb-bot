@@ -22,24 +22,38 @@ cd C:\Users\tieut\Arb-bot
 
 **Or** double-click `START.bat` in the repo root.
 
-(Same scripts also live in `deploy\` if you prefer that folder.)
-
-That’s it. The script will:
+That's it. The script will:
 
 - Create `%USERPROFILE%\.hermes\.env` (paper config) if missing  
-- Build the Docker image (first run only, ~3–5 min)  
+- Build the Docker image (first run only, ~3-5 min)  
 - Start the 24/7 paper worker with WebSocket re-verify  
+- Start the **PnL dashboard** at http://localhost:8787  
 - Run a quick alpha pre-flight  
 
-## After it’s running
+## Dashboard (PnL + trade history)
 
-| What | Command (from `deploy` folder) |
-|------|--------------------------------|
+Open in your browser:
+
+**http://localhost:8787**
+
+Or run:
+
+```powershell
+.\DASHBOARD.ps1
+```
+
+- Realized / today PnL, wins/losses, open positions  
+- **Last 50 trades** — **click any row to expand** fill details  
+- Auto-refreshes every 30 seconds  
+
+## After it's running
+
+| What | Command (repo root) |
+|------|---------------------|
+| Dashboard | http://localhost:8787 or `.\DASHBOARD.ps1` |
 | Live logs | `.\LOGS.ps1` |
 | Status | `.\STATUS.ps1` |
 | Stop | `.\STOP.ps1` |
-
-(Run from repo root `Arb-bot\`, or from `deploy\`.)
 
 ## If PowerShell blocks the script
 
@@ -62,5 +76,5 @@ Run `.\START.ps1` again — it rebuilds and restarts automatically.
 ## Notes
 
 - **Paper only** — no wallet key needed  
-- **No alpha in logs** is normal; markets are often efficient  
-- Main repo `docker-compose.yml` is Hermes gateway — **ignore it**; use only `deploy/START.ps1`
+- **No trades yet** on dashboard is normal until the worker paper-fills  
+- Main repo `docker-compose.yml` is Hermes gateway — ignore it; use `START.ps1`
