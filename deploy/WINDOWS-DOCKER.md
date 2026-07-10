@@ -8,10 +8,10 @@
 ## Start the bot (one command)
 
 1. Open **PowerShell**
-2. Go to the **`deploy`** folder:
+2. Go to the repo root:
 
 ```powershell
-cd C:\Users\tieut\Arb-bot\deploy
+cd C:\Users\tieut\Arb-bot
 ```
 
 3. Run:
@@ -20,7 +20,9 @@ cd C:\Users\tieut\Arb-bot\deploy
 .\START.ps1
 ```
 
-**Or** double-click `START.bat` in File Explorer (same folder).
+**Or** double-click `START.bat` in the repo root.
+
+(Same scripts also live in `deploy\` if you prefer that folder.)
 
 That’s it. The script will:
 
