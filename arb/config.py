@@ -17,16 +17,22 @@ def _hermes_home() -> Path:
 class ArbConfig:
     """Tunable scanner, risk, and trading thresholds."""
 
-    min_edge_bps: float = 50.0
-    taker_fee_bps: float = 0.0
+    min_edge_bps: float = 30.0
+    taker_fee_bps: float = 10.0
     page_size: int = 100
     max_markets: int | None = None
-    verify_top_n: int = 25
+    verify_top_n: int = 40
     state_dir: Path | None = None
     dry_run: bool = True
     study_mode: bool = True
     min_book_depth: float = 5.0
     alert_on_verified: bool = True
+    # Scanner / alpha
+    scan_source: str = "events"
+    gamma_max_offset: int = 2000
+    liquid_scan_limit: int = 400
+    near_miss_bps: float = 15.0
+    alpha_workers: int = 8
     # Phase 2 risk / execution
     kill_switch: bool = False
     exec_mode: ExecMode = ExecMode.PAPER
@@ -107,11 +113,11 @@ class ArbConfig:
         )
         state_dir = os.environ.get("ARB_STATE_DIR")
         return cls(
-            min_edge_bps=_float("ARB_MIN_EDGE_BPS", 50.0),
-            taker_fee_bps=_float("ARB_TAKER_FEE_BPS", 0.0),
+            min_edge_bps=_float("ARB_MIN_EDGE_BPS", 30.0),
+            taker_fee_bps=_float("ARB_TAKER_FEE_BPS", 10.0),
             page_size=int(os.environ.get("ARB_PAGE_SIZE", "100")),
             max_markets=_int("ARB_MAX_MARKETS", None),
-            verify_top_n=int(os.environ.get("ARB_VERIFY_TOP_N", "25")),
+            verify_top_n=int(os.environ.get("ARB_VERIFY_TOP_N", "40")),
             state_dir=Path(state_dir) if state_dir else None,
             dry_run=_bool("ARB_DRY_RUN", True),
             study_mode=_bool("ARB_STUDY_MODE", True),
@@ -133,6 +139,11 @@ class ArbConfig:
             ws_watch_sec=_float("ARB_WS_WATCH_SEC", 30.0),
             ws_max_assets=int(os.environ.get("ARB_WS_MAX_ASSETS", "40")),
             ws_seed_rest=_bool("ARB_WS_SEED_REST", True),
+            scan_source=(os.environ.get("ARB_SCAN_SOURCE") or "events").lower().strip(),
+            gamma_max_offset=int(os.environ.get("ARB_GAMMA_MAX_OFFSET", "2000")),
+            liquid_scan_limit=int(os.environ.get("ARB_LIQUID_SCAN_LIMIT", "400")),
+            near_miss_bps=_float("ARB_NEAR_MISS_BPS", 15.0),
+            alpha_workers=int(os.environ.get("ARB_ALPHA_WORKERS", "8")),
         )
 
     def with_overrides(

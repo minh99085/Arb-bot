@@ -146,7 +146,9 @@ def detect_from_bids(
     min_edge: float,
     fee_rate: float,
 ) -> Opportunity | None:
-    if len(bids) < 2:
+    if len(bids) < 2 or len(token_ids) < 2:
+        return None
+    if any(p <= 0 or p >= 1 for p in bids):
         return None
     total = sum(bids)
     sell_threshold = 1.0 + fee_rate + min_edge

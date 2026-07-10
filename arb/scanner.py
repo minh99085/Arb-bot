@@ -76,6 +76,8 @@ def scan_gamma(config: ArbConfig) -> tuple[int, list[Opportunity]]:
         closed=False,
         page_size=config.page_size,
         max_markets=config.max_markets,
+        max_offset=config.gamma_max_offset,
+        source=config.scan_source,
     ):
         if market.get("closed"):
             continue
@@ -109,11 +111,8 @@ def verify_one(config: ArbConfig, opp: Opportunity) -> VerifyOutcome:
     ask_depth = 0.0
     bid_depth = 0.0
     for token_id in opp.token_ids:
-        try:
-            book = fetch_orderbook(token_id)
-        except SystemExit:
-            return VerifyOutcome(None, RejectReason.NO_BOOK)
-        except Exception:
+        book = fetch_orderbook(token_id)
+        if not book:
             return VerifyOutcome(None, RejectReason.NO_BOOK)
         best_bid, best_ask = best_bid_ask(book)
         if best_ask is None or best_bid is None:
@@ -272,7 +271,7 @@ def run_scan(
     )
 
 
-def format_alert(result: ScanResult) -> str | None:
+def format_alert(result: ScanResult, *, position_usd: float = 25.0) -> str | None:
     """Stdout alert for cron delivery — only when verified hits exist."""
     if not result.verified_hits:
         return None
@@ -282,7 +281,9 @@ def format_alert(result: ScanResult) -> str | None:
         "",
     ]
     for opp in result.verified_hits[:5]:
+        pnl = round(opp.edge * position_usd, 4)
         lines.append(
-            f"- {opp.kind.value} edge={opp.edge_bps:.1f}bps total={opp.total:.4f} | {opp.question[:90]}"
+            f"- {opp.kind.value} edge={opp.edge_bps:.1f}bps "
+            f"~${pnl:.3f}@${position_usd:.0f} total={opp.total:.4f} | {opp.question[:80]}"
         )
     return "\n".join(lines)

@@ -36,9 +36,9 @@ Config (optional, in `.env`):
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `ARB_MIN_EDGE_BPS` | `50` | Minimum edge after fees (basis points) |
-| `ARB_TAKER_FEE_BPS` | `0` | Assumed taker fee per leg |
-| `ARB_VERIFY_TOP_N` | `25` | CLOB book checks for top gamma hits |
+| `ARB_MIN_EDGE_BPS` | `30` | Minimum edge after fees (basis points) |
+| `ARB_TAKER_FEE_BPS` | `10` | Assumed taker fee per leg |
+| `ARB_VERIFY_TOP_N` | `40` | CLOB book checks for top gamma hits |
 | `ARB_DRY_RUN` | `true` | Skip live order placement |
 | `ARB_STATE_DIR` | `~/.hermes/profiles/polymarket-arb/state` | SQLite opportunity log |
 
@@ -46,6 +46,7 @@ Config (optional, in `.env`):
 
 ```bash
 python -m arb scan --study
+python -m arb alpha --liquid 400    # pre-deploy: direct CLOB alpha dashboard
 python -m arb status
 python -m arb study --days 30
 ```

@@ -269,6 +269,25 @@ class OpportunityStore:
                 ).fetchall()
         return [dict(row) for row in rows]
 
+    def top_by_edge(
+        self,
+        limit: int = 10,
+        *,
+        state: OppState = OppState.CLOB_VERIFIED,
+    ) -> list[dict]:
+        """Best opportunities by edge_bps (trade selection should prefer this over recency)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM opportunities
+                WHERE state = ?
+                ORDER BY edge_bps DESC, detected_at DESC
+                LIMIT ?
+                """,
+                (state.value, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def count(self, *, state: OppState | None = None) -> int:
         with self._connect() as conn:
             if state is None:

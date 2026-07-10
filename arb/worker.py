@@ -155,7 +155,7 @@ class ArbWorker:
         result = run_scan(cfg, gamma_only=False, persist=True)
         self.status.scans += 1
         self.status.last_scan_at = _now()
-        alert = format_alert(result) if cfg.alert_on_verified else None
+        alert = format_alert(result, position_usd=cfg.max_position_usd) if cfg.alert_on_verified else None
         if alert:
             self.status.alerts += 1
             self.alert_path.write_text(alert + "\n")
@@ -177,7 +177,7 @@ class ArbWorker:
         )
         result = run_scan(cfg, gamma_only=False, persist=True)
         store = OpportunityStore(cfg.state_db)
-        rows = store.recent(limit=self.wc.trade_limit, state=OppState.CLOB_VERIFIED)
+        rows = store.top_by_edge(limit=self.wc.trade_limit, state=OppState.CLOB_VERIFIED)
 
         if self.wc.use_ws and cfg.ws_enabled and result.verified_hits:
             from arb.reverify import reverify_opportunities

@@ -3,13 +3,30 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Iterator
 
 _MODULE: Any | None = None
+
+# Gamma caps offset around 2000 (limit=100). Paginate via volume-ordered events.
+GAMMA_MAX_OFFSET = 2000
+DEFAULT_USER_AGENT = "polymarket-arb-bot/1.0"
+
+
+class PolymarketAPIError(Exception):
+    """Non-fatal API error from Gamma/CLOB."""
+
+    def __init__(self, status: int, reason: str, url: str = ""):
+        self.status = status
+        self.reason = reason
+        self.url = url
+        super().__init__(f"HTTP {status}: {reason}")
 
 
 def _repo_polymarket_script() -> Path:
@@ -51,18 +68,100 @@ def load_polymarket_module():
     )
 
 
+def _gamma_base() -> str:
+    return load_polymarket_module().GAMMA
+
+
+def _clob_base() -> str:
+    return load_polymarket_module().CLOB
+
+
+def api_get(url: str, *, timeout: float = 20.0) -> dict | list:
+    """GET JSON without sys.exit — raises PolymarketAPIError on HTTP errors."""
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": os.environ.get("ARB_USER_AGENT", DEFAULT_USER_AGENT)},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        raise PolymarketAPIError(e.code, e.reason, url) from e
+    except urllib.error.URLError as e:
+        raise PolymarketAPIError(0, str(e.reason), url) from e
+
+
 def gamma_get(path: str) -> dict | list:
-    pm = load_polymarket_module()
-    return pm._get(f"{pm.GAMMA}{path}")
+    return api_get(f"{_gamma_base()}{path}")
 
 
 def clob_get(path: str) -> dict | list:
-    pm = load_polymarket_module()
-    return pm._get(f"{pm.CLOB}{path}")
+    return api_get(f"{_clob_base()}{path}")
 
 
 def parse_json_field(val: Any) -> Any:
     return load_polymarket_module()._parse_json_field(val)
+
+
+def _market_volume(market: dict) -> float:
+    try:
+        return float(market.get("volume") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def iter_event_markets(
+    *,
+    active: bool = True,
+    closed: bool = False,
+    page_size: int = 100,
+    max_markets: int | None = None,
+    max_offset: int | None = None,
+    order: str = "volume",
+) -> Iterator[dict]:
+    """Yield markets from volume-ordered Gamma events (best for liquid alpha).
+
+    Dedupes by condition_id. Stops cleanly when Gamma returns 422 (offset cap).
+    """
+    offset_cap = max_offset if max_offset is not None else int(
+        os.environ.get("ARB_GAMMA_MAX_OFFSET", str(GAMMA_MAX_OFFSET))
+    )
+    seen: set[str] = set()
+    yielded = 0
+    offset = 0
+
+    while offset <= offset_cap:
+        params = urllib.parse.urlencode(
+            {
+                "limit": page_size,
+                "offset": offset,
+                "active": str(active).lower(),
+                "closed": str(closed).lower(),
+                "order": order,
+                "ascending": "false",
+            }
+        )
+        try:
+            batch = gamma_get(f"/events?{params}")
+        except PolymarketAPIError as e:
+            if e.status == 422:
+                break
+            raise
+        if not isinstance(batch, list) or not batch:
+            break
+        for event in batch:
+            for market in event.get("markets") or []:
+                condition_id = market.get("conditionId") or market.get("condition_id") or ""
+                if not condition_id or condition_id in seen:
+                    continue
+                seen.add(condition_id)
+                yield market
+                yielded += 1
+                if max_markets is not None and yielded >= max_markets:
+                    return
+        if len(batch) < page_size:
+            break
+        offset += page_size
 
 
 def iter_markets(
@@ -71,20 +170,49 @@ def iter_markets(
     closed: bool = False,
     page_size: int = 100,
     max_markets: int | None = None,
+    max_offset: int | None = None,
+    order: str = "volume",
+    source: str | None = None,
 ) -> Iterator[dict]:
-    """Paginate all Gamma markets."""
+    """Paginate Gamma markets.
+
+    Default source is ``events`` (volume-ordered, deduped). Set ARB_SCAN_SOURCE=markets
+    for legacy /markets pagination (also capped at max offset).
+    """
+    scan_source = (source or os.environ.get("ARB_SCAN_SOURCE", "events")).lower().strip()
+    if scan_source == "events":
+        yield from iter_event_markets(
+            active=active,
+            closed=closed,
+            page_size=page_size,
+            max_markets=max_markets,
+            max_offset=max_offset,
+            order=order,
+        )
+        return
+
+    offset_cap = max_offset if max_offset is not None else int(
+        os.environ.get("ARB_GAMMA_MAX_OFFSET", str(GAMMA_MAX_OFFSET))
+    )
     offset = 0
     seen = 0
-    while True:
+    while offset <= offset_cap:
         params = urllib.parse.urlencode(
             {
                 "limit": page_size,
                 "offset": offset,
                 "active": str(active).lower(),
                 "closed": str(closed).lower(),
+                "order": order,
+                "ascending": "false",
             }
         )
-        batch = gamma_get(f"/markets?{params}")
+        try:
+            batch = gamma_get(f"/markets?{params}")
+        except PolymarketAPIError as e:
+            if e.status == 422:
+                break
+            raise
         if not isinstance(batch, list) or not batch:
             break
         for market in batch:
@@ -120,8 +248,14 @@ def market_tokens(market: dict) -> tuple[list[str], list[str], list[float]]:
     return outcomes, tokens, floats
 
 
-def fetch_orderbook(token_id: str) -> dict:
-    return clob_get(f"/book?token_id={urllib.parse.quote(token_id, safe='')}")
+def fetch_orderbook(token_id: str) -> dict | None:
+    """Fetch CLOB book. Returns None on 404 (closed/invalid token)."""
+    try:
+        return clob_get(f"/book?token_id={urllib.parse.quote(token_id, safe='')}")
+    except PolymarketAPIError as e:
+        if e.status == 404:
+            return None
+        raise
 
 
 def best_bid_ask(book: dict) -> tuple[float | None, float | None]:

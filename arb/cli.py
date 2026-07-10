@@ -14,9 +14,13 @@ from arb.scanner import format_alert, run_scan
 from arb.state import OpportunityStore
 
 
-def _print_opportunity(opp, prefix: str = "") -> None:
+def _print_opportunity(opp, prefix: str = "", *, position_usd: float = 25.0) -> None:
     kind = opp.kind.value.replace("_", " ")
-    print(f"{prefix}{kind:12} edge={opp.edge_bps:6.1f}bps total={opp.total:.4f} [{opp.source}]")
+    pnl = round(opp.edge * position_usd, 4)
+    print(
+        f"{prefix}{kind:12} edge={opp.edge_bps:6.1f}bps "
+        f"~${pnl:6.3f}@${position_usd:.0f} total={opp.total:.4f} [{opp.source}]"
+    )
     print(f"{prefix}  {opp.question[:100]}")
     print(f"{prefix}  slug={opp.slug} condition={opp.condition_id[:18]}...")
 
@@ -62,18 +66,23 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if result.verified_hits:
         print(f"Verified opportunities ({len(result.verified_hits)}):")
         for opp in result.verified_hits[: args.top]:
-            _print_opportunity(opp)
+            _print_opportunity(opp, position_usd=config.max_position_usd)
             print()
     elif result.gamma_hits and args.gamma_only:
         print(f"Gamma candidates ({len(result.gamma_hits)}):")
         for opp in result.gamma_hits[: args.top]:
-            _print_opportunity(opp)
+            _print_opportunity(opp, position_usd=config.max_position_usd)
             print()
     else:
         print("No CLOB-verified Dutch-book opportunities above threshold.")
+        if result.gamma_hits:
+            print(
+                f"  ({len(result.gamma_hits)} gamma flags — run `python -m arb alpha` "
+                f"for direct CLOB spread report)"
+            )
 
     if config.alert_on_verified and not args.quiet:
-        alert = format_alert(result)
+        alert = format_alert(result, position_usd=config.max_position_usd)
         if alert:
             print()
             print(alert)
@@ -82,6 +91,34 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print(f"Metrics: {result.metrics_path}")
         print(f"Ledger:  {config.ledger_path}")
     return 0
+
+
+def cmd_alpha(args: argparse.Namespace) -> int:
+    from arb.alpha import format_alpha_report, run_alpha_scan
+
+    config = ArbConfig.from_env()
+    overrides: dict = {}
+    if args.min_edge_bps is not None:
+        overrides["min_edge_bps"] = args.min_edge_bps
+    if args.limit is not None:
+        overrides["max_markets"] = args.limit
+    if overrides:
+        config = config.with_overrides(**overrides)
+    liquid = args.liquid if args.liquid is not None else config.liquid_scan_limit
+    near_miss = (
+        args.near_miss_bps if args.near_miss_bps is not None else config.near_miss_bps
+    )
+    result = run_alpha_scan(
+        config,
+        liquid_limit=liquid,
+        near_miss_bps=near_miss,
+        workers=config.alpha_workers,
+    )
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+        return 0
+    print(format_alpha_report(result, config))
+    return 0 if result.clob_checked >= 10 else 1
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -187,7 +224,7 @@ def cmd_trade(args: argparse.Namespace) -> int:
         return 1
 
     store = OpportunityStore(config.state_db)
-    rows = store.recent(limit=args.limit * 5, state=OppState.CLOB_VERIFIED)
+    rows = store.top_by_edge(limit=args.limit, state=OppState.CLOB_VERIFIED)
     if args.verified_only is False:
         # also allow RISK_OK retries? keep verified-only default path
         pass
@@ -540,6 +577,22 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--study", action="store_true")
     scan.add_argument("--quiet", action="store_true")
     scan.set_defaults(func=cmd_scan)
+
+    alpha = sub.add_parser(
+        "alpha",
+        help="Pre-deploy alpha scan — direct CLOB on top liquid markets",
+    )
+    alpha.add_argument(
+        "--liquid",
+        type=int,
+        default=None,
+        help="Top N liquid markets to CLOB-check (default ARB_LIQUID_SCAN_LIMIT=400)",
+    )
+    alpha.add_argument("--min-edge-bps", type=float, default=None)
+    alpha.add_argument("--near-miss-bps", type=float, default=None)
+    alpha.add_argument("--limit", type=int, default=None, help="Cap universe markets fetched")
+    alpha.add_argument("--json", action="store_true")
+    alpha.set_defaults(func=cmd_alpha)
 
     status = sub.add_parser("status", help="Show stored opportunities / positions")
     status.add_argument("--limit", type=int, default=20)
