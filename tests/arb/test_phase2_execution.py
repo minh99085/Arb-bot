@@ -41,6 +41,7 @@ def _cfg(tmp_path: Path, **kwargs) -> ArbConfig:
         max_daily_trades=10,
         max_daily_loss_usd=50.0,
         min_book_depth=1.0,
+        paper_realistic=False,
     )
     base.update(kwargs)
     return ArbConfig(**base)
@@ -93,6 +94,47 @@ def test_execute_paper_and_reconcile(tmp_path: Path):
     assert report.realized_pnl_sum > 0
     assert store.get(opp_id)["state"] == OppState.CLOSED.value
     assert store.count_open() == 0
+
+
+def test_realistic_paper_rejects_gamma_source(tmp_path: Path):
+    cfg = _cfg(tmp_path, paper_realistic=True, min_edge_bps=25.0)
+    store = OpportunityStore(cfg.state_db)
+    base = _opp()
+    gamma_opp = Opportunity(
+        kind=base.kind,
+        condition_id=base.condition_id,
+        slug=base.slug,
+        question=base.question,
+        outcomes=base.outcomes,
+        token_ids=base.token_ids,
+        prices=base.prices,
+        total=base.total,
+        edge=base.edge,
+        edge_bps=base.edge_bps,
+        source="gamma",
+    )
+    oid = store.save(gamma_opp, state=OppState.GAMMA_FLAG, verified=False)
+    res = execute_opportunity(cfg, store, gamma_opp, opportunity_id=oid)
+    assert res.status == "gamma_rejected"
+
+
+def test_realistic_paper_refreshes_clob(tmp_path: Path, monkeypatch):
+    cfg = _cfg(tmp_path, paper_realistic=True, min_edge_bps=25.0)
+    store = OpportunityStore(cfg.state_db)
+    opp = _opp(edge_bps=200.0)
+    oid = store.save(opp, state=OppState.CLOB_VERIFIED, verified=True, ask_depth=50, bid_depth=50)
+
+    from arb import execute as execute_mod
+    from arb.scanner import VerifyOutcome
+
+    monkeypatch.setattr(
+        execute_mod,
+        "verify_one",
+        lambda config, o: VerifyOutcome(opp, None, 50.0, 50.0),
+    )
+    res = execute_opportunity(cfg, store, opp, opportunity_id=oid, ask_depth=50, bid_depth=50)
+    assert res.status == "paper_filled"
+    assert "clob refresh" in res.detail
 
 
 def test_duplicate_open_blocked(tmp_path: Path):

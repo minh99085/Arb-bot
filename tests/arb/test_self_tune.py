@@ -82,24 +82,24 @@ def test_self_tune_tightens_on_losses(tmp_path: Path, monkeypatch):
 
 
 def test_apply_overrides_to_config(tmp_path: Path):
-    cfg = ArbConfig(state_dir=tmp_path, min_edge_bps=10.0, self_tune=True)
+    cfg = ArbConfig(state_dir=tmp_path, min_edge_bps=25.0, self_tune=True)
     from arb.self_tune import save_overrides
 
-    save_overrides(cfg, {"ARB_MIN_EDGE_BPS": 7.0, "ARB_VERIFY_TOP_N": 120})
+    save_overrides(cfg, {"ARB_MIN_EDGE_BPS": 18.0, "ARB_VERIFY_TOP_N": 120})
     merged = apply_overrides_to_config(cfg)
-    assert merged.min_edge_bps == 7.0
+    assert merged.min_edge_bps == 18.0
     assert merged.verify_top_n == 120
 
 
 def test_from_env_merges_self_tune(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ARB_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("ARB_SELF_TUNE", "true")
-    monkeypatch.setenv("ARB_MIN_EDGE_BPS", "10")
+    monkeypatch.setenv("ARB_MIN_EDGE_BPS", "25")
     cfg0 = ArbConfig.from_env(apply_self_tune=False)
     from arb.self_tune import save_overrides
 
-    save_overrides(cfg0, {"ARB_MIN_EDGE_BPS": 6.0})
+    save_overrides(cfg0, {"ARB_MIN_EDGE_BPS": 20.0})
     cfg = ArbConfig.from_env(apply_self_tune=True)
-    assert cfg.min_edge_bps == 6.0
+    assert cfg.min_edge_bps == 20.0
     st = status_dict(cfg)
     assert st["enabled"] is True

@@ -48,6 +48,8 @@ class RiskRejectReason(str, Enum):
     CATEGORY_BLOCKED = "category_blocked"
     INSUFFICIENT_DEPTH = "insufficient_depth"
     DUPLICATE_OPEN = "duplicate_open"
+    EXEC_VERIFY_FAILED = "exec_verify_failed"
+    GAMMA_ONLY = "gamma_only"
     OTHER = "other"
 
 

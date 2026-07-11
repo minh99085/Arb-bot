@@ -40,15 +40,21 @@ def simulate_paper_fill(
         fees_usd = size_usd * fee * len(fill_prices)
         slippage_usd = size_usd * abs(fill_total - opp.total)
         # Unit edge on $1 complete set, scaled by size
-        unit_edge = max(0.0, 1.0 - fill_total - fee * len(fill_prices))
+        unit_edge = 1.0 - fill_total - fee * len(fill_prices)
         expected_pnl = round(unit_edge * size_usd, 6)
     else:
         fill_prices = [max(0.01, p * (1.0 - slip)) for p in opp.prices]
         fill_total = sum(fill_prices)
         fees_usd = size_usd * fee * len(fill_prices)
         slippage_usd = size_usd * abs(opp.total - fill_total)
-        unit_edge = max(0.0, fill_total - 1.0 - fee * len(fill_prices))
+        unit_edge = fill_total - 1.0 - fee * len(fill_prices)
         expected_pnl = round(unit_edge * size_usd, 6)
+
+    if config.paper_realistic:
+        # Do not floor negative PnL — honest paper accounting after fees/slippage
+        pass
+    else:
+        expected_pnl = max(0.0, expected_pnl)
 
     return PaperFill(
         opportunity=opp,

@@ -28,14 +28,14 @@ def _now() -> str:
 class WorkerConfig:
     """Schedule for the standalone worker (seconds)."""
 
-    scan_interval_sec: float = 60.0
-    loop_interval_sec: float = 60.0
+    scan_interval_sec: float = 120.0
+    loop_interval_sec: float = 120.0
     postmortem_interval_sec: float = 21600.0
-    reconcile_interval_sec: float = 600.0
-    self_tune_interval_sec: float = 1200.0
+    reconcile_interval_sec: float = 900.0
+    self_tune_interval_sec: float = 1800.0
     scan_limit: int | None = None
-    trade_limit: int = 30
-    use_ws: bool = False
+    trade_limit: int = 10
+    use_ws: bool = True
     ws_sec: float = 12.0
     paper: bool = True
     run_postmortem: bool = True
@@ -63,14 +63,14 @@ class WorkerConfig:
             return raw.lower() not in {"0", "false", "no"}
 
         return cls(
-            scan_interval_sec=_f("ARB_WORKER_SCAN_SEC", 60.0),
-            loop_interval_sec=_f("ARB_WORKER_LOOP_SEC", 60.0),
+            scan_interval_sec=_f("ARB_WORKER_SCAN_SEC", 120.0),
+            loop_interval_sec=_f("ARB_WORKER_LOOP_SEC", 120.0),
             postmortem_interval_sec=_f("ARB_WORKER_POSTMORTEM_SEC", 21600.0),
-            reconcile_interval_sec=_f("ARB_WORKER_RECONCILE_SEC", 600.0),
-            self_tune_interval_sec=_f("ARB_WORKER_SELF_TUNE_SEC", 1200.0),
+            reconcile_interval_sec=_f("ARB_WORKER_RECONCILE_SEC", 900.0),
+            self_tune_interval_sec=_f("ARB_WORKER_SELF_TUNE_SEC", 1800.0),
             scan_limit=_i("ARB_WORKER_SCAN_LIMIT", None),
-            trade_limit=int(os.environ.get("ARB_WORKER_TRADE_LIMIT", "30")),
-            use_ws=_b("ARB_WORKER_USE_WS", False),
+            trade_limit=int(os.environ.get("ARB_WORKER_TRADE_LIMIT", "10")),
+            use_ws=_b("ARB_WORKER_USE_WS", True),
             ws_sec=_f("ARB_WORKER_WS_SEC", 12.0),
             paper=_b("ARB_WORKER_PAPER", True),
             run_postmortem=_b("ARB_WORKER_POSTMORTEM", True),
@@ -201,6 +201,7 @@ class ArbWorker:
         if (
             not rows
             and cfg.paper_gamma_fallback
+            and not cfg.paper_realistic
             and self.wc.paper
             and cfg.exec_mode == ExecMode.PAPER
         ):

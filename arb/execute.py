@@ -10,6 +10,7 @@ from arb.dutch_book import Opportunity
 from arb.models import ExecMode, OppState, RiskRejectReason
 from arb.paper import PaperFill, simulate_paper_fill
 from arb.risk import RiskDecision, check_risk
+from arb.scanner import VerifyOutcome, verify_one
 from arb.state import OpportunityStore
 
 
@@ -22,6 +23,11 @@ class TradeResult:
     fill: PaperFill | None = None
     risk: RiskDecision | None = None
     live: Any | None = None
+
+
+def refresh_opportunity_from_clob(config: ArbConfig, opp: Opportunity) -> VerifyOutcome:
+    """Re-fetch live CLOB books immediately before trade (live-parity paper path)."""
+    return verify_one(config, opp)
 
 
 def execute_opportunity(
@@ -37,7 +43,57 @@ def execute_opportunity(
     """Run risk → order → fill for one opportunity.
 
     Default is paper. Live requires ARB_ALLOW_LIVE + key + exec_mode=live + gates.
+    Realistic paper re-verifies on live CLOB books at execution time.
     """
+    row = store.get(opportunity_id) if opportunity_id is not None else None
+
+    if config.paper_realistic and config.exec_mode == ExecMode.PAPER:
+        if row and row.get("state") == OppState.GAMMA_FLAG.value:
+            if opportunity_id is not None:
+                store.transition(
+                    opportunity_id,
+                    OppState.REJECTED,
+                    reason=RiskRejectReason.GAMMA_ONLY.value,
+                )
+            return TradeResult(
+                opportunity=opp,
+                status="gamma_rejected",
+                detail="Realistic paper: gamma-only signals cannot be traded",
+                opportunity_id=opportunity_id,
+            )
+        if opp.source == "gamma":
+            if opportunity_id is not None:
+                store.transition(
+                    opportunity_id,
+                    OppState.REJECTED,
+                    reason=RiskRejectReason.GAMMA_ONLY.value,
+                )
+            return TradeResult(
+                opportunity=opp,
+                status="gamma_rejected",
+                detail="Realistic paper: opportunity source is gamma mid-price, not CLOB",
+                opportunity_id=opportunity_id,
+            )
+
+        refresh = refresh_opportunity_from_clob(config, opp)
+        if refresh.opportunity is None:
+            reason = refresh.reject_reason.value if refresh.reject_reason else "unknown"
+            if opportunity_id is not None:
+                store.transition(
+                    opportunity_id,
+                    OppState.REJECTED,
+                    reason=f"exec_verify:{reason}",
+                )
+            return TradeResult(
+                opportunity=opp,
+                status="exec_verify_failed",
+                detail=f"Live CLOB re-verify failed at execution: {reason}",
+                opportunity_id=opportunity_id,
+            )
+        opp = refresh.opportunity
+        ask_depth = refresh.ask_depth
+        bid_depth = refresh.bid_depth
+
     risk = check_risk(
         config,
         store,
@@ -140,7 +196,7 @@ def execute_opportunity(
             live=live,
         )
 
-    # Paper path
+    # Paper path — uses refreshed CLOB prices when realistic mode is on
     fill = simulate_paper_fill(config, opp, size_usd=risk.size_usd)
     store.transition(opp_id, OppState.ORDER_PLACED, reason="paper_order")
     fill_id = store.record_fill(
@@ -161,6 +217,7 @@ def execute_opportunity(
         detail=(
             f"paper size=${fill.size_usd:.2f} fill_total={fill.fill_total:.4f} "
             f"expected_pnl=${fill.expected_pnl:.4f}"
+            + (" (clob refresh)" if config.paper_realistic else "")
         ),
         opportunity_id=opp_id,
         fill=fill,

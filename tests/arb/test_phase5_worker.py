@@ -43,6 +43,7 @@ def test_worker_once_loop_paper(tmp_path: Path, monkeypatch):
         exec_mode=ExecMode.PAPER,
         min_book_depth=1.0,
         max_position_usd=10.0,
+        paper_realistic=False,
     )
     wc = WorkerConfig(scan_limit=0, trade_limit=2, paper=True, use_ws=False, run_self_tune=False)
 
@@ -81,6 +82,7 @@ def test_worker_gamma_fallback_trades(tmp_path: Path, monkeypatch):
         study_mode=False,
         exec_mode=ExecMode.PAPER,
         paper_gamma_fallback=True,
+        paper_realistic=False,
         min_edge_bps=-30.0,
         min_book_depth=1.0,
         max_position_usd=10.0,

@@ -29,24 +29,27 @@ services:
       ARB_KILL_SWITCH: "false"
       ARB_ALLOW_LIVE: "false"
       ARB_SCAN_SOURCE: events
-      ARB_MIN_EDGE_BPS: "-30"
-      ARB_TAKER_FEE_BPS: "2"
-      ARB_VERIFY_TOP_N: "200"
-      ARB_MIN_BOOK_DEPTH: "1"
-      ARB_PAPER_GAMMA_FALLBACK: "true"
-      ARB_MAX_POSITION_USD: "10"
-      ARB_MAX_OPEN_POSITIONS: "30"
-      ARB_MAX_DAILY_TRADES: "300"
-      ARB_WORKER_USE_WS: "false"
+      ARB_PAPER_REALISTIC: "true"
+      ARB_PAPER_GAMMA_FALLBACK: "false"
+      ARB_MIN_EDGE_BPS: "25"
+      ARB_PAPER_MIN_EDGE_BPS: "15"
+      ARB_TAKER_FEE_BPS: "10"
+      ARB_VERIFY_TOP_N: "50"
+      ARB_MIN_BOOK_DEPTH: "2"
+      ARB_MAX_POSITION_USD: "15"
+      ARB_MAX_OPEN_POSITIONS: "10"
+      ARB_MAX_DAILY_TRADES: "50"
+      ARB_PAPER_SLIPPAGE_BPS: "15"
+      ARB_WORKER_USE_WS: "true"
       ARB_WORKER_PAPER: "true"
-      ARB_WORKER_SCAN_SEC: "60"
-      ARB_WORKER_LOOP_SEC: "60"
-      ARB_WORKER_TRADE_LIMIT: "30"
+      ARB_WORKER_SCAN_SEC: "120"
+      ARB_WORKER_LOOP_SEC: "120"
+      ARB_WORKER_TRADE_LIMIT: "10"
       ARB_SELF_TUNE: "true"
     volumes:
       # Windows Docker Desktop: %USERPROFILE%\.hermes → /data
       - ${USERPROFILE}/.hermes:/data
-    command: ["python", "-m", "arb", "worker", "run", "--paper"]
+    command: ["python", "-m", "arb", "worker", "run", "--paper", "--ws"]
 
   arb-dashboard:
     image: polymarket-arb:local

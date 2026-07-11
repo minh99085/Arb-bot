@@ -43,8 +43,10 @@ def build_dashboard_payload(config: ArbConfig, *, trade_limit: int = 50) -> dict
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "study_mode": config.study_mode,
         "exec_mode": config.exec_mode.value,
+        "paper_realistic": config.paper_realistic,
+        "paper_gamma_fallback": config.paper_gamma_fallback,
         "thresholds": {
-            "min_edge_bps": config.min_edge_bps,
+            "min_edge_bps": config.effective_min_edge_bps(),
             "verify_top_n": config.verify_top_n,
             "max_position_usd": config.max_position_usd,
             "max_open_positions": config.max_open_positions,
@@ -166,13 +168,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border-radius: 10px;
     }
     .refresh { color: var(--muted); font-size: 0.75rem; }
-    .chevron { color: var(--muted); font-size: 0.7rem; }
+    .banner {
+      background: #1e3a5f;
+      border: 1px solid #2d5a8a;
+      border-radius: 10px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1rem;
+      font-size: 0.85rem;
+      color: #b8d4f0;
+    }
+    .banner strong { color: var(--blue); }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Polymarket Arb Dashboard</h1>
-    <p class="sub">Paper / live trade PnL &middot; auto-refresh 30s &middot; click a row to expand</p>
+    <div class="banner" id="banner"></div>
+    <p class="sub">Live Polymarket data &middot; realistic paper fills &middot; auto-refresh 30s &middot; click a row to expand</p>
     <div class="cards" id="cards"></div>
     <div class="section-title">Live thresholds <span class="badge" id="tune-badge">self-tune</span></div>
     <div class="cards" id="thresh"></div>
@@ -189,7 +201,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     const fmtPct = (bps) => (bps == null ? "-" : Number(bps).toFixed(1) + " bps");
     const pnlClass = (n) => (n == null ? "" : (n >= 0 ? "pos" : "neg"));
 
+    function renderBanner(data) {
+      const el = document.getElementById("banner");
+      if (data.paper_realistic) {
+        el.innerHTML = "<strong>Realistic paper mode</strong> — scans live Gamma + CLOB, trades only " +
+          "CLOB-verified arbs, re-checks order books at execution. Simulated fills (not real money). " +
+          "Min edge: " + (data.thresholds && data.thresholds.min_edge_bps) + " bps.";
+      } else if (data.exec_mode === "live") {
+        el.innerHTML = "<strong>Live mode</strong> — real orders with real money.";
+      } else {
+        el.innerHTML = "<strong>Exploration paper mode</strong> — relaxed thresholds; PnL may overstate live results.";
+      }
+    }
+
     function renderCards(data) {
+      renderBanner(data);
       const s = data.summary || {};
       const cards = [
         ["Realized PnL", fmtUsd(s.realized_pnl_sum), pnlClass(s.realized_pnl_sum)],
@@ -257,7 +283,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           `<div><dt>Question</dt><dd>${t.question || "-"}</dd></div>` +
           `<div><dt>Slug</dt><dd>${t.slug || "-"}</dd></div>` +
           `<div><dt>Condition ID</dt><dd>${t.condition_id || "-"}</dd></div>` +
-          `<div><dt>Source</dt><dd>${t.source || "-"}</dd></div>` +
+          `<div><dt>Source</dt><dd>${t.source || "-"} (CLOB at execution)</dd></div>` +
           `<div><dt>Fill total</dt><dd>${t.fill_total != null ? t.fill_total : "-"}</dd></div>` +
           `<div><dt>Fees / Slippage</dt><dd>${fmtUsd(t.fees_usd)} / ${fmtUsd(t.slippage_usd)}</dd></div>` +
           `<div><dt>Fill prices</dt><dd>${prices}</dd></div>` +

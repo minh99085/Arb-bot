@@ -55,11 +55,11 @@ def check_risk(
             "ARB_STUDY_MODE=true — set false to allow paper/live execution",
         )
 
-    if opp.edge_bps < config.min_edge_bps:
+    if opp.edge_bps < config.effective_min_edge_bps():
         return RiskDecision(
             False,
             RiskRejectReason.BELOW_MIN_EDGE,
-            f"edge {opp.edge_bps:.1f}bps < min {config.min_edge_bps:.1f}bps",
+            f"edge {opp.edge_bps:.1f}bps < min {config.effective_min_edge_bps():.1f}bps",
         )
 
     if category and category.lower() in config.category_blocklist:

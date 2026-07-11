@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from arb.models import ExecMode
 
@@ -21,31 +22,33 @@ class ArbConfig:
     and env vars can tighten or loosen further within safety rails.
     """
 
-    min_edge_bps: float = -30.0
-    taker_fee_bps: float = 2.0
+    min_edge_bps: float = 25.0
+    taker_fee_bps: float = 10.0
     page_size: int = 100
     max_markets: int | None = None
-    verify_top_n: int = 200
+    verify_top_n: int = 50
     state_dir: Path | None = None
     dry_run: bool = True
     study_mode: bool = True
-    min_book_depth: float = 1.0
+    min_book_depth: float = 2.0
     alert_on_verified: bool = True
     # Scanner / alpha
     scan_source: str = "events"
     gamma_max_offset: int = 2000
-    liquid_scan_limit: int = 1200
-    near_miss_bps: float = 50.0
-    paper_gamma_fallback: bool = True
+    liquid_scan_limit: int = 800
+    near_miss_bps: float = 30.0
+    paper_gamma_fallback: bool = False
+    paper_realistic: bool = True
+    paper_min_edge_bps: float = 15.0
     alpha_workers: int = 12
     # Phase 2 risk / execution — high activity paper defaults
     kill_switch: bool = False
     exec_mode: ExecMode = ExecMode.PAPER
     max_position_usd: float = 15.0
-    max_open_positions: int = 30
-    max_daily_trades: int = 300
+    max_open_positions: int = 10
+    max_daily_trades: int = 50
     max_daily_loss_usd: float = 75.0
-    paper_slippage_bps: float = 5.0
+    paper_slippage_bps: float = 15.0
     allow_live: bool = False
     category_blocklist: tuple[str, ...] = ()
     # Phase 3 feed
@@ -120,23 +123,23 @@ class ArbConfig:
         )
         state_dir = os.environ.get("ARB_STATE_DIR")
         cfg = cls(
-            min_edge_bps=_float("ARB_MIN_EDGE_BPS", -30.0),
-            taker_fee_bps=_float("ARB_TAKER_FEE_BPS", 2.0),
+            min_edge_bps=_float("ARB_MIN_EDGE_BPS", 25.0),
+            taker_fee_bps=_float("ARB_TAKER_FEE_BPS", 10.0),
             page_size=int(os.environ.get("ARB_PAGE_SIZE", "100")),
             max_markets=_int("ARB_MAX_MARKETS", None),
-            verify_top_n=int(os.environ.get("ARB_VERIFY_TOP_N", "200")),
+            verify_top_n=int(os.environ.get("ARB_VERIFY_TOP_N", "50")),
             state_dir=Path(state_dir) if state_dir else None,
             dry_run=_bool("ARB_DRY_RUN", True),
             study_mode=_bool("ARB_STUDY_MODE", True),
-            min_book_depth=_float("ARB_MIN_BOOK_DEPTH", 1.0),
+            min_book_depth=_float("ARB_MIN_BOOK_DEPTH", 2.0),
             alert_on_verified=_bool("ARB_ALERT_ON_VERIFIED", True),
             kill_switch=_bool("ARB_KILL_SWITCH", False),
             exec_mode=exec_mode,
             max_position_usd=_float("ARB_MAX_POSITION_USD", 15.0),
-            max_open_positions=int(os.environ.get("ARB_MAX_OPEN_POSITIONS", "30")),
-            max_daily_trades=int(os.environ.get("ARB_MAX_DAILY_TRADES", "300")),
+            max_open_positions=int(os.environ.get("ARB_MAX_OPEN_POSITIONS", "10")),
+            max_daily_trades=int(os.environ.get("ARB_MAX_DAILY_TRADES", "50")),
             max_daily_loss_usd=_float("ARB_MAX_DAILY_LOSS_USD", 75.0),
-            paper_slippage_bps=_float("ARB_PAPER_SLIPPAGE_BPS", 5.0),
+            paper_slippage_bps=_float("ARB_PAPER_SLIPPAGE_BPS", 15.0),
             allow_live=_bool("ARB_ALLOW_LIVE", False),
             category_blocklist=blocklist,
             ws_url=os.environ.get(
@@ -148,9 +151,11 @@ class ArbConfig:
             ws_seed_rest=_bool("ARB_WS_SEED_REST", True),
             scan_source=(os.environ.get("ARB_SCAN_SOURCE") or "events").lower().strip(),
             gamma_max_offset=int(os.environ.get("ARB_GAMMA_MAX_OFFSET", "2000")),
-            liquid_scan_limit=int(os.environ.get("ARB_LIQUID_SCAN_LIMIT", "1200")),
-            near_miss_bps=_float("ARB_NEAR_MISS_BPS", 50.0),
-            paper_gamma_fallback=_bool("ARB_PAPER_GAMMA_FALLBACK", True),
+            liquid_scan_limit=int(os.environ.get("ARB_LIQUID_SCAN_LIMIT", "800")),
+            near_miss_bps=_float("ARB_NEAR_MISS_BPS", 30.0),
+            paper_gamma_fallback=_bool("ARB_PAPER_GAMMA_FALLBACK", False),
+            paper_realistic=_bool("ARB_PAPER_REALISTIC", True),
+            paper_min_edge_bps=_float("ARB_PAPER_MIN_EDGE_BPS", 15.0),
             alpha_workers=int(os.environ.get("ARB_ALPHA_WORKERS", "12")),
             self_tune=_bool("ARB_SELF_TUNE", True),
         )
@@ -161,7 +166,27 @@ class ArbConfig:
                 cfg = apply_overrides_to_config(cfg)
             except Exception:
                 pass
+        if cfg.paper_realistic:
+            cfg = cfg._apply_realistic_paper_clamp()
         return cfg
+
+    def _apply_realistic_paper_clamp(self) -> ArbConfig:
+        """Prevent fantasy paper settings — CLOB-only, positive edge floor."""
+        kwargs: dict[str, Any] = {"paper_gamma_fallback": False}
+        floor = max(0.0, self.paper_min_edge_bps)
+        if self.min_edge_bps < floor:
+            kwargs["min_edge_bps"] = max(floor, 25.0)
+        if self.taker_fee_bps < 5.0:
+            kwargs["taker_fee_bps"] = 10.0
+        if self.paper_slippage_bps < 10.0:
+            kwargs["paper_slippage_bps"] = 15.0
+        return replace(self, **kwargs)
+
+    def effective_min_edge_bps(self) -> float:
+        """Edge threshold used by risk + execution (stricter in realistic paper)."""
+        if self.paper_realistic:
+            return max(self.min_edge_bps, self.paper_min_edge_bps)
+        return self.min_edge_bps
 
     def with_overrides(
         self,
