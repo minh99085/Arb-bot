@@ -21,28 +21,29 @@ class ArbConfig:
     and env vars can tighten or loosen further within safety rails.
     """
 
-    min_edge_bps: float = 10.0
-    taker_fee_bps: float = 10.0
+    min_edge_bps: float = -30.0
+    taker_fee_bps: float = 2.0
     page_size: int = 100
     max_markets: int | None = None
-    verify_top_n: int = 100
+    verify_top_n: int = 200
     state_dir: Path | None = None
     dry_run: bool = True
     study_mode: bool = True
-    min_book_depth: float = 2.0
+    min_book_depth: float = 1.0
     alert_on_verified: bool = True
     # Scanner / alpha
     scan_source: str = "events"
     gamma_max_offset: int = 2000
-    liquid_scan_limit: int = 800
-    near_miss_bps: float = 30.0
+    liquid_scan_limit: int = 1200
+    near_miss_bps: float = 50.0
+    paper_gamma_fallback: bool = True
     alpha_workers: int = 12
     # Phase 2 risk / execution — high activity paper defaults
     kill_switch: bool = False
     exec_mode: ExecMode = ExecMode.PAPER
     max_position_usd: float = 15.0
-    max_open_positions: int = 15
-    max_daily_trades: int = 100
+    max_open_positions: int = 30
+    max_daily_trades: int = 300
     max_daily_loss_usd: float = 75.0
     paper_slippage_bps: float = 5.0
     allow_live: bool = False
@@ -119,21 +120,21 @@ class ArbConfig:
         )
         state_dir = os.environ.get("ARB_STATE_DIR")
         cfg = cls(
-            min_edge_bps=_float("ARB_MIN_EDGE_BPS", 10.0),
-            taker_fee_bps=_float("ARB_TAKER_FEE_BPS", 10.0),
+            min_edge_bps=_float("ARB_MIN_EDGE_BPS", -30.0),
+            taker_fee_bps=_float("ARB_TAKER_FEE_BPS", 2.0),
             page_size=int(os.environ.get("ARB_PAGE_SIZE", "100")),
             max_markets=_int("ARB_MAX_MARKETS", None),
-            verify_top_n=int(os.environ.get("ARB_VERIFY_TOP_N", "100")),
+            verify_top_n=int(os.environ.get("ARB_VERIFY_TOP_N", "200")),
             state_dir=Path(state_dir) if state_dir else None,
             dry_run=_bool("ARB_DRY_RUN", True),
             study_mode=_bool("ARB_STUDY_MODE", True),
-            min_book_depth=_float("ARB_MIN_BOOK_DEPTH", 2.0),
+            min_book_depth=_float("ARB_MIN_BOOK_DEPTH", 1.0),
             alert_on_verified=_bool("ARB_ALERT_ON_VERIFIED", True),
             kill_switch=_bool("ARB_KILL_SWITCH", False),
             exec_mode=exec_mode,
             max_position_usd=_float("ARB_MAX_POSITION_USD", 15.0),
-            max_open_positions=int(os.environ.get("ARB_MAX_OPEN_POSITIONS", "15")),
-            max_daily_trades=int(os.environ.get("ARB_MAX_DAILY_TRADES", "100")),
+            max_open_positions=int(os.environ.get("ARB_MAX_OPEN_POSITIONS", "30")),
+            max_daily_trades=int(os.environ.get("ARB_MAX_DAILY_TRADES", "300")),
             max_daily_loss_usd=_float("ARB_MAX_DAILY_LOSS_USD", 75.0),
             paper_slippage_bps=_float("ARB_PAPER_SLIPPAGE_BPS", 5.0),
             allow_live=_bool("ARB_ALLOW_LIVE", False),
@@ -147,8 +148,9 @@ class ArbConfig:
             ws_seed_rest=_bool("ARB_WS_SEED_REST", True),
             scan_source=(os.environ.get("ARB_SCAN_SOURCE") or "events").lower().strip(),
             gamma_max_offset=int(os.environ.get("ARB_GAMMA_MAX_OFFSET", "2000")),
-            liquid_scan_limit=int(os.environ.get("ARB_LIQUID_SCAN_LIMIT", "800")),
-            near_miss_bps=_float("ARB_NEAR_MISS_BPS", 30.0),
+            liquid_scan_limit=int(os.environ.get("ARB_LIQUID_SCAN_LIMIT", "1200")),
+            near_miss_bps=_float("ARB_NEAR_MISS_BPS", 50.0),
+            paper_gamma_fallback=_bool("ARB_PAPER_GAMMA_FALLBACK", True),
             alpha_workers=int(os.environ.get("ARB_ALPHA_WORKERS", "12")),
             self_tune=_bool("ARB_SELF_TUNE", True),
         )

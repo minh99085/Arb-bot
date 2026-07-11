@@ -20,21 +20,23 @@ from arb.state import OpportunityStore
 
 # Hard safety rails — self-tune cannot leave these ranges
 BOUNDS: dict[str, tuple[float, float]] = {
-    "ARB_MIN_EDGE_BPS": (5.0, 150.0),
-    "ARB_VERIFY_TOP_N": (20.0, 200.0),
+    "ARB_MIN_EDGE_BPS": (-50.0, 150.0),
+    "ARB_TAKER_FEE_BPS": (0.0, 50.0),
+    "ARB_VERIFY_TOP_N": (50.0, 400.0),
     "ARB_MAX_POSITION_USD": (5.0, 100.0),
-    "ARB_MAX_OPEN_POSITIONS": (3.0, 40.0),
-    "ARB_MAX_DAILY_TRADES": (10.0, 300.0),
-    "ARB_MIN_BOOK_DEPTH": (1.0, 50.0),
-    "ARB_WS_WATCH_SEC": (5.0, 120.0),
+    "ARB_MAX_OPEN_POSITIONS": (5.0, 60.0),
+    "ARB_MAX_DAILY_TRADES": (20.0, 500.0),
+    "ARB_MIN_BOOK_DEPTH": (0.5, 50.0),
+    "ARB_WS_WATCH_SEC": (3.0, 120.0),
     "ARB_PAPER_SLIPPAGE_BPS": (0.0, 50.0),
-    "ARB_WORKER_TRADE_LIMIT": (1.0, 50.0),
-    "ARB_NEAR_MISS_BPS": (5.0, 80.0),
+    "ARB_WORKER_TRADE_LIMIT": (5.0, 100.0),
+    "ARB_NEAR_MISS_BPS": (5.0, 100.0),
 }
 
 # Map env key → ArbConfig field name
 KEY_TO_FIELD: dict[str, str] = {
     "ARB_MIN_EDGE_BPS": "min_edge_bps",
+    "ARB_TAKER_FEE_BPS": "taker_fee_bps",
     "ARB_VERIFY_TOP_N": "verify_top_n",
     "ARB_MAX_POSITION_USD": "max_position_usd",
     "ARB_MAX_OPEN_POSITIONS": "max_open_positions",
@@ -238,7 +240,7 @@ def propose_adjustments(
             overrides,
             config,
             key="ARB_MIN_EDGE_BPS",
-            new_value=max(5.0, edge - 5.0),
+            new_value=max(-50.0, edge - 10.0),
             rationale="No verified/paper signals — lower edge to explore more markets",
             evidence={"verified_like": verified_like, "fills": fills},
         )
@@ -246,8 +248,17 @@ def propose_adjustments(
             changes,
             overrides,
             config,
+            key="ARB_TAKER_FEE_BPS",
+            new_value=max(0.0, _current_value(config, "ARB_TAKER_FEE_BPS", overrides) - 2.0),
+            rationale="Quiet book — reduce assumed fees to surface more CLOB hits",
+            evidence={"fills": fills},
+        )
+        _adjust(
+            changes,
+            overrides,
+            config,
             key="ARB_VERIFY_TOP_N",
-            new_value=min(200.0, verify_n + 20.0),
+            new_value=min(400.0, verify_n + 40.0),
             rationale="Quiet book — verify more gamma candidates per scan",
             evidence={"verify_top_n": verify_n},
         )
@@ -256,7 +267,7 @@ def propose_adjustments(
             overrides,
             config,
             key="ARB_MIN_BOOK_DEPTH",
-            new_value=max(1.0, depth - 1.0),
+            new_value=max(0.5, depth - 0.5),
             rationale="Quiet book — allow thinner books for discovery",
             evidence={"min_book_depth": depth},
         )
@@ -265,9 +276,18 @@ def propose_adjustments(
             overrides,
             config,
             key="ARB_WORKER_TRADE_LIMIT",
-            new_value=min(50.0, trade_lim + 5.0),
+            new_value=min(100.0, trade_lim + 10.0),
             rationale="Increase per-loop trade attempts while exploring",
             evidence={"trade_limit": trade_lim},
+        )
+        _adjust(
+            changes,
+            overrides,
+            config,
+            key="ARB_MAX_DAILY_TRADES",
+            new_value=min(500.0, daily + 25.0),
+            rationale="Quiet book — raise daily trade cap for paper discovery",
+            evidence={"daily": daily},
         )
 
     # --- High false positives: tighten edge ---
@@ -328,7 +348,7 @@ def propose_adjustments(
             overrides,
             config,
             key="ARB_MIN_EDGE_BPS",
-            new_value=max(5.0, edge - 2.0),
+            new_value=max(-50.0, edge - 2.0),
             rationale="Winning — slightly ease edge to capture more flow",
             evidence={"edge": edge},
         )
@@ -506,6 +526,8 @@ def apply_overrides_to_config(config: ArbConfig) -> ArbConfig:
             "max_daily_trades",
         }:
             kwargs[field] = int(round(value))
+        elif field == "taker_fee_bps":
+            kwargs[field] = float(value)
         else:
             kwargs[field] = float(value)
     return replace(config, **kwargs) if kwargs else config

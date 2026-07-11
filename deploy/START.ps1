@@ -33,23 +33,24 @@ $envLines = @(
     "ARB_DRY_RUN=true",
     "ARB_KILL_SWITCH=false",
     "ARB_ALLOW_LIVE=false",
-    "ARB_MIN_EDGE_BPS=10",
-    "ARB_TAKER_FEE_BPS=10",
-    "ARB_VERIFY_TOP_N=100",
-    "ARB_MIN_BOOK_DEPTH=2",
-    "ARB_MAX_POSITION_USD=15",
-    "ARB_MAX_OPEN_POSITIONS=15",
-    "ARB_MAX_DAILY_TRADES=100",
-    "ARB_MAX_DAILY_LOSS_USD=75",
-    "ARB_PAPER_SLIPPAGE_BPS=5",
-    "ARB_WORKER_SCAN_SEC=120",
-    "ARB_WORKER_LOOP_SEC=180",
-    "ARB_WORKER_TRADE_LIMIT=15",
-    "ARB_WORKER_USE_WS=true",
+    "ARB_MIN_EDGE_BPS=-30",
+    "ARB_TAKER_FEE_BPS=2",
+    "ARB_VERIFY_TOP_N=200",
+    "ARB_MIN_BOOK_DEPTH=1",
+    "ARB_PAPER_GAMMA_FALLBACK=true",
+    "ARB_MAX_POSITION_USD=10",
+    "ARB_MAX_OPEN_POSITIONS=30",
+    "ARB_MAX_DAILY_TRADES=300",
+    "ARB_MAX_DAILY_LOSS_USD=100",
+    "ARB_PAPER_SLIPPAGE_BPS=3",
+    "ARB_WORKER_SCAN_SEC=60",
+    "ARB_WORKER_LOOP_SEC=60",
+    "ARB_WORKER_TRADE_LIMIT=30",
+    "ARB_WORKER_USE_WS=false",
     "ARB_WORKER_PAPER=true",
-    "ARB_WORKER_SELF_TUNE_SEC=1800",
+    "ARB_WORKER_SELF_TUNE_SEC=1200",
     "ARB_SELF_TUNE=true",
-    "ARB_SELF_TUNE_MAX_CHANGES_PER_DAY=20"
+    "ARB_SELF_TUNE_MAX_CHANGES_PER_DAY=30"
 )
 $envLines | Set-Content -Path $EnvFile -Encoding UTF8
 Write-Host ("      Wrote " + $EnvFile) -ForegroundColor Green
@@ -79,7 +80,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Host " BOT IS RUNNING (paper + self-tune)" -ForegroundColor Green
+Write-Host " BOT IS RUNNING (aggressive paper + self-tune)" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Dashboard:        http://localhost:8787"

@@ -75,6 +75,47 @@ def test_worker_once_loop_paper(tmp_path: Path, monkeypatch):
     assert out["jobs"]["loop"]["realized_pnl"] != 0 or out["jobs"]["loop"]["traded"] >= 1
 
 
+def test_worker_gamma_fallback_trades(tmp_path: Path, monkeypatch):
+    cfg = ArbConfig(
+        state_dir=tmp_path,
+        study_mode=False,
+        exec_mode=ExecMode.PAPER,
+        paper_gamma_fallback=True,
+        min_edge_bps=-30.0,
+        min_book_depth=1.0,
+        max_position_usd=10.0,
+    )
+    wc = WorkerConfig(scan_limit=0, trade_limit=1, paper=True, use_ws=False, run_self_tune=False)
+
+    from arb import worker as worker_mod
+    from arb.scanner import ScanResult
+
+    opp = Opportunity(
+        kind=ArbKind.BUY_BUNDLE,
+        condition_id="0xgamma",
+        slug="g",
+        question="Gamma fallback?",
+        outcomes=["Yes", "No"],
+        token_ids=["a", "b"],
+        prices=[0.48, 0.48],
+        total=0.96,
+        edge=0.02,
+        edge_bps=200.0,
+        source="gamma",
+    )
+
+    def fake_scan(config, gamma_only=False, persist=True):
+        store = OpportunityStore(config.state_db)
+        store.save(opp, state=OppState.GAMMA_FLAG, verified=False)
+        return ScanResult(scanned=1, gamma_hits=[opp], verified_hits=[], rejected=[], run_id=1)
+
+    monkeypatch.setattr(worker_mod, "run_scan", fake_scan)
+    w = ArbWorker(cfg, wc)
+    out = w.run_once(jobs=["loop"])
+    assert out["jobs"]["loop"]["gamma_fallback"] is True
+    assert out["jobs"]["loop"]["traded"] >= 1
+
+
 def test_worker_run_forever_stops(tmp_path: Path, monkeypatch):
     cfg = ArbConfig(state_dir=tmp_path, study_mode=True)
     wc = WorkerConfig(
