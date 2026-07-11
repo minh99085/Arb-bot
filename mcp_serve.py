@@ -11,6 +11,7 @@ Matches OpenClaw's 9-tool MCP channel bridge surface:
   permissions_respond
 
 Plus: channels_list (Hermes-specific extra)
+Plus: trigger_high_speed_scan, high_speed_scan_status (Polymarket L2)
 
 Usage:
     hermes mcp serve
@@ -553,7 +554,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         instructions=(
             "Hermes Agent messaging bridge. Use these tools to interact with "
             "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
-            "Matrix, and other connected platforms."
+            "Matrix, and other connected platforms. Also exposes "
+            "trigger_high_speed_scan for native Polymarket L2 arb tracking "
+            "(algorithmic WebSocket path — no LLM on the pricing loop)."
         ),
     )
 
@@ -948,6 +951,91 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
         result = bridge.respond_to_approval(id, decision)
         return json.dumps(result, indent=2)
+
+    # -- trigger_high_speed_scan (Polymarket L2, non-LLM hot path) ---------
+
+    @mcp.tool()
+    async def trigger_high_speed_scan(
+        yes_token_id: str,
+        no_token_id: str,
+        min_edge_percent: float = 0.5,
+    ) -> str:
+        """Start a native low-latency Polymarket L2 WebSocket scanner (non-blocking).
+
+        Spawns an algorithmic background task that hooks into the production
+        CLOB market WebSocket, maintains YES/NO Level-2 books, and prints an
+        execution trigger when best YES ask + best NO ask < 1.0 - target edge.
+        No LLM reasoning runs inside the pricing loop.
+
+        Args:
+            yes_token_id: Polymarket CLOB token id for the YES outcome
+            no_token_id: Polymarket CLOB token id for the NO outcome
+            min_edge_percent: Minimum edge in percent points (0.5 = 0.5%)
+        """
+        yes = (yes_token_id or "").strip()
+        no = (no_token_id or "").strip()
+        if not yes or not no:
+            return json.dumps({
+                "ok": False,
+                "error": "yes_token_id and no_token_id are required",
+            })
+        if yes == no:
+            return json.dumps({
+                "ok": False,
+                "error": "yes_token_id and no_token_id must be different",
+            })
+        try:
+            edge = float(min_edge_percent)
+        except (TypeError, ValueError):
+            return json.dumps({
+                "ok": False,
+                "error": f"invalid min_edge_percent: {min_edge_percent!r}",
+            })
+        if edge < 0:
+            return json.dumps({
+                "ok": False,
+                "error": "min_edge_percent must be >= 0",
+            })
+
+        try:
+            from tools.polymarket_fast_scanner import (
+                DEFAULT_WS_URL,
+                start_scanner_background,
+            )
+
+            scanner, status = start_scanner_background(
+                yes,
+                no,
+                min_edge_percent=edge,
+                ws_url=DEFAULT_WS_URL,
+            )
+        except Exception as exc:
+            logger.exception("trigger_high_speed_scan failed")
+            return json.dumps({
+                "ok": False,
+                "error": str(exc),
+            })
+
+        return json.dumps({
+            "ok": True,
+            "status": status,
+            "scanner": scanner.status(),
+        }, indent=2)
+
+    @mcp.tool()
+    def high_speed_scan_status() -> str:
+        """List active Polymarket high-speed L2 scanners and their book tops."""
+        try:
+            from tools.polymarket_fast_scanner import get_active_scanners
+
+            active = get_active_scanners()
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)})
+        return json.dumps({
+            "ok": True,
+            "count": len(active),
+            "scanners": active,
+        }, indent=2)
 
     return mcp
 

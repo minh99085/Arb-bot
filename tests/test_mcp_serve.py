@@ -222,7 +222,10 @@ class _FakeToolManager:
         self._tools[fn.__name__] = _FakeTool(fn)
 
     async def call_tool(self, name, args=None):
-        return self._tools[name].fn(**(args or {}))
+        result = self._tools[name].fn(**(args or {}))
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def list_tools(self):
         return list(self._tools.values())
@@ -920,7 +923,7 @@ class TestE2EPermissions:
 
 
 # ---------------------------------------------------------------------------
-# 4. TOOL LISTING — verify all 10 tools are registered
+# 4. TOOL LISTING — verify all tools are registered
 # ---------------------------------------------------------------------------
 
 class TestToolRegistration:
@@ -934,13 +937,64 @@ class TestToolRegistration:
             "attachments_fetch", "events_poll", "events_wait",
             "messages_send", "channels_list",
             "permissions_list_open", "permissions_respond",
+            "trigger_high_speed_scan", "high_speed_scan_status",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
+
+    def test_all_tools_registered_fake(self, fake_mcp_server):
+        """Registration works even without the mcp SDK installed."""
+        server, _ = fake_mcp_server
+        tool_names = {t.name for t in server._tool_manager.list_tools()}
+        assert "trigger_high_speed_scan" in tool_names
+        assert "high_speed_scan_status" in tool_names
+        assert "conversations_list" in tool_names
 
     def test_tools_have_descriptions(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
         for tool in server._tool_manager.list_tools():
             assert tool.description, f"Tool {tool.name} has no description"
+
+    def test_trigger_high_speed_scan_via_fake(self, fake_mcp_server, monkeypatch, _event_loop):
+        server, _ = fake_mcp_server
+
+        async def fake_run(self):
+            self.connected = True
+            await asyncio.sleep(0.02)
+            self.connected = False
+
+        from tools import polymarket_fast_scanner as pfs
+
+        monkeypatch.setattr(pfs.PolymarketL2Scanner, "run", fake_run)
+
+        async def _call():
+            raw = await server._tool_manager.call_tool(
+                "trigger_high_speed_scan",
+                {
+                    "yes_token_id": "YES_TOKEN_ABC",
+                    "no_token_id": "NO_TOKEN_XYZ",
+                    "min_edge_percent": 0.5,
+                },
+            )
+            data = json.loads(raw)
+            assert data["ok"] is True
+            assert "hooked into websocket gateway" in data["status"]
+            status_raw = await server._tool_manager.call_tool("high_speed_scan_status", {})
+            status = json.loads(status_raw)
+            assert status["ok"] is True
+            assert status["count"] >= 1
+
+            from tools.polymarket_fast_scanner import _ACTIVE, stop_scanner
+
+            for k, scanner in list(_ACTIVE.items()):
+                task = scanner._task
+                stop_scanner(k)
+                if task is not None:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+                    except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                        pass
+
+        _event_loop.run_until_complete(_call())
 
 
 # ---------------------------------------------------------------------------
