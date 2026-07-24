@@ -7,9 +7,15 @@ from dataclasses import dataclass, field, replace
 
 from arb.book_cache import BookCache
 from arb.config import ArbConfig
-from arb.dutch_book import Opportunity, detect_from_asks, detect_from_bids
+from arb.dutch_book import Opportunity
 from arb.models import OppState, RejectReason
-from arb.scanner import VerifyOutcome
+from arb.plan import BookSnapshot
+from arb.scanner import (
+    VerifyOutcome,
+    build_buy_plan,
+    opportunity_from_plan,
+    reject_reason_for_plan,
+)
 from arb.state import OpportunityStore
 
 
@@ -32,63 +38,45 @@ class ReverifyResult:
 
 
 def verify_from_cache(config: ArbConfig, cache: BookCache, opp: Opportunity) -> VerifyOutcome:
-    """Re-check Dutch-book using cached top-of-book (no REST)."""
-    asks: list[float] = []
-    bids: list[float] = []
-    ask_depth = 0.0
-    bid_depth = 0.0
-
+    """Re-check executability from the live book cache via the plan builder (no REST)."""
+    depth = config.plan_depth()
+    snapshots: list[BookSnapshot] = []
     for token_id in opp.token_ids:
-        book = cache.get(token_id)
-        if book is None:
+        cached = cache.get(token_id)
+        if cached is None:
             return VerifyOutcome(None, RejectReason.NO_BOOK)
-        best_bid = book.best_bid if book.best_bid is not None else book.bids.best(side="bid")
-        best_ask = book.best_ask if book.best_ask is not None else book.asks.best(side="ask")
-        if best_ask is None or best_bid is None:
+        snap = BookSnapshot.from_book(
+            token_id,
+            cached.to_rest_shape(),
+            source="ws",
+            captured_at=cached.updated_at,
+            default_tick_size=config.assumed_tick_size,
+            default_min_order_size=config.assumed_min_order_size,
+        )
+        if not snap.asks or snap.best_bid is None:
             return VerifyOutcome(None, RejectReason.MISSING_BID_ASK)
-        asks.append(best_ask)
-        bids.append(best_bid)
-        ask_depth += book.asks.depth(side="ask")
-        bid_depth += book.bids.depth(side="bid")
+        snapshots.append(snap)
 
-    if ask_depth < config.min_book_depth and bid_depth < config.min_book_depth:
-        return VerifyOutcome(None, RejectReason.ILLIQUID, ask_depth, bid_depth)
-
-    buy_opp = detect_from_asks(
-        question=opp.question,
-        slug=opp.slug,
-        condition_id=opp.condition_id,
-        outcomes=opp.outcomes,
-        token_ids=opp.token_ids,
-        asks=asks,
-        min_edge=config.min_edge,
-        fee_rate=config.fee_rate,
-    )
-    sell_opp = detect_from_bids(
-        question=opp.question,
-        slug=opp.slug,
-        condition_id=opp.condition_id,
-        outcomes=opp.outcomes,
-        token_ids=opp.token_ids,
-        bids=bids,
-        min_edge=config.min_edge,
-        fee_rate=config.fee_rate,
+    ask_depth = min(s.ask_capacity(depth_levels=depth) for s in snapshots)
+    bid_depth = min(
+        round(sum(lvl.size for lvl in (s.bids if not depth or depth <= 0 else s.bids[:depth])), 8)
+        for s in snapshots
     )
 
-    verified: Opportunity | None = None
-    if buy_opp and sell_opp:
-        verified = buy_opp if buy_opp.edge_bps >= sell_opp.edge_bps else sell_opp
-    elif buy_opp:
-        verified = buy_opp
-    elif sell_opp:
-        verified = sell_opp
+    plan = build_buy_plan(
+        config,
+        condition_id=opp.condition_id,
+        slug=opp.slug,
+        question=opp.question,
+        outcomes=list(opp.outcomes),
+        snapshots=snapshots,
+    )
+    if not plan.executable:
+        reason = reject_reason_for_plan(plan.rejection.reason) if plan.rejection else RejectReason.OTHER
+        return VerifyOutcome(None, reason, ask_depth, bid_depth, plan=plan)
 
-    if verified is None:
-        return VerifyOutcome(None, RejectReason.EDGE_EVAPORATED, ask_depth, bid_depth)
-
-    source = "ws_asks" if verified.source.endswith("asks") else "ws_bids"
-    verified = replace(verified, source=source)
-    return VerifyOutcome(verified, None, ask_depth, bid_depth)
+    verified = replace(opportunity_from_plan(plan), source="ws_asks")
+    return VerifyOutcome(verified, None, ask_depth, bid_depth, plan=plan)
 
 
 def reverify_opportunities(

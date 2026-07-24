@@ -75,10 +75,15 @@ def test_risk_ok_and_size(tmp_path: Path):
 
 
 def test_paper_fill_buy_bundle():
-    cfg = ArbConfig(paper_slippage_bps=0.0, taker_fee_bps=0.0, max_position_usd=10.0)
+    # size_usd is a CASH BUDGET; it buys q complete sets (shares), not a notional.
+    cfg = ArbConfig(taker_fee_bps=0.0, max_position_usd=10.0)
     fill = simulate_paper_fill(cfg, _opp(), size_usd=10.0)
-    assert fill.fill_total == 0.85
-    assert fill.expected_pnl == round(0.15 * 10.0, 6)
+    assert fill.fill_total == 0.85                       # sum of per-set ask prices
+    # q = budget / total = 10 / 0.85; net = q * $1 (redeem) - gross_notional
+    q = 10.0 / 0.85
+    assert abs(fill.q_complete_sets - q) < 1e-6
+    assert abs(fill.expected_pnl - (q - 10.0)) < 1e-6   # ≈ 1.7647, not 1.5
+    assert fill.label == "shadow"                        # never realized
 
 
 def test_execute_paper_and_reconcile_leaves_unresolved(tmp_path: Path):

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from arb.config import ArbConfig
 from arb.dutch_book import Opportunity
 from arb.models import RiskRejectReason
+from arb.plan import CompleteSetPlan
 from arb.state import OpportunityStore
 
 
@@ -43,8 +44,14 @@ def check_risk(
     ask_depth: float | None = None,
     bid_depth: float | None = None,
     category: str | None = None,
+    plan: CompleteSetPlan | None = None,
 ) -> RiskDecision:
-    """Independent risk gate. Fail-closed."""
+    """Independent risk gate. Fail-closed.
+
+    When a complete-set ``plan`` is supplied, sizing and depth come from the plan
+    (shares vs dollars kept separate); otherwise a conservative scalar-depth
+    fallback is used for legacy callers.
+    """
     if config.kill_switch:
         return RiskDecision(False, RiskRejectReason.KILL_SWITCH, "ARB_KILL_SWITCH is on")
 
@@ -69,17 +76,27 @@ def check_risk(
             f"category '{category}' is blocklisted",
         )
 
-    size = _size_for(config, opp, ask_depth, bid_depth)
-    if size <= 0:
-        return RiskDecision(False, RiskRejectReason.INSUFFICIENT_DEPTH, "sized to zero")
-
-    if ask_depth is not None and bid_depth is not None:
-        if ask_depth < config.min_book_depth and bid_depth < config.min_book_depth:
+    if plan is not None:
+        # Plan already validated capacity (weakest leg) and common q; size in
+        # dollars is the plan's gross notional, capped by the position limit.
+        if not plan.executable or plan.q_complete_sets <= 0:
             return RiskDecision(
-                False,
-                RiskRejectReason.INSUFFICIENT_DEPTH,
-                f"depth ask={ask_depth:.2f} bid={bid_depth:.2f} < {config.min_book_depth}",
+                False, RiskRejectReason.INSUFFICIENT_DEPTH, "no executable complete-set plan"
             )
+        size = round(min(config.max_position_usd, plan.gross_notional_usd), 4)
+        if size <= 0:
+            return RiskDecision(False, RiskRejectReason.INSUFFICIENT_DEPTH, "plan sized to zero")
+    else:
+        size = _size_for(config, opp, ask_depth, bid_depth)
+        if size <= 0:
+            return RiskDecision(False, RiskRejectReason.INSUFFICIENT_DEPTH, "sized to zero")
+        if ask_depth is not None and bid_depth is not None:
+            if ask_depth < config.min_book_depth and bid_depth < config.min_book_depth:
+                return RiskDecision(
+                    False,
+                    RiskRejectReason.INSUFFICIENT_DEPTH,
+                    f"depth ask={ask_depth:.2f} bid={bid_depth:.2f} < {config.min_book_depth}",
+                )
 
     open_n = store.count_open()
     if open_n >= config.max_open_positions:

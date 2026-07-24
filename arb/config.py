@@ -61,6 +61,13 @@ class ArbConfig:
     ws_watch_sec: float = 15.0
     ws_max_assets: int = 80
     ws_seed_rest: bool = True
+    # Phase 2 — complete-set execution plan
+    fee_venue: str = "polymarket"           # venue fee model; unknown → fail closed
+    max_book_age_sec: float = 30.0          # book freshness window for a valid plan
+    conversion_cost_usd: float = 0.0        # merge/redeem cost per plan
+    assumed_tick_size: float = 0.01         # used when a book omits tick size
+    assumed_min_order_size: float = 5.0     # used when a book omits min order size
+    plan_depth_levels: int = 10             # L2/L3 depth to walk (0 = all levels)
     # Self-tune — OFF by default. When disabled, historical self_tune.json
     # overrides are neither loaded nor applied (old files are kept for audit).
     self_tune: bool = False
@@ -170,6 +177,12 @@ class ArbConfig:
             paper_realistic=_bool("ARB_PAPER_REALISTIC", True),
             paper_min_edge_bps=_float("ARB_PAPER_MIN_EDGE_BPS", 15.0),
             alpha_workers=int(os.environ.get("ARB_ALPHA_WORKERS", "12")),
+            fee_venue=(os.environ.get("ARB_FEE_VENUE") or "polymarket").lower().strip(),
+            max_book_age_sec=_float("ARB_MAX_BOOK_AGE_SEC", 30.0),
+            conversion_cost_usd=_float("ARB_CONVERSION_COST_USD", 0.0),
+            assumed_tick_size=_float("ARB_ASSUMED_TICK_SIZE", 0.01),
+            assumed_min_order_size=_float("ARB_ASSUMED_MIN_ORDER_SIZE", 5.0),
+            plan_depth_levels=int(os.environ.get("ARB_PLAN_DEPTH_LEVELS", "10")),
             self_tune=_bool("ARB_SELF_TUNE", False),
         )
         if apply_self_tune and cfg.self_tune:
@@ -220,6 +233,18 @@ class ArbConfig:
             exec_mode=self.exec_mode if exec_mode is None else exec_mode,
             kill_switch=self.kill_switch if kill_switch is None else kill_switch,
         )
+
+    def fee_model(self):
+        """Return the venue fee model. Unknown venues fail closed at plan time."""
+        from arb.plan import PolymarketFeeModel, UnknownFeeModel
+
+        if self.fee_venue == "polymarket":
+            return PolymarketFeeModel(self.taker_fee_bps)
+        return UnknownFeeModel(self.fee_venue)
+
+    def plan_depth(self) -> int | None:
+        """L2/L3 depth to walk; None means all levels."""
+        return self.plan_depth_levels if self.plan_depth_levels > 0 else None
 
     def trading_enabled(self) -> bool:
         return bool(os.environ.get("POLYMARKET_PRIVATE_KEY", "").strip())

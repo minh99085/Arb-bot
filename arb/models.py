@@ -24,7 +24,7 @@ class OppState(str, Enum):
 
 
 class RejectReason(str, Enum):
-    """Why a gamma flag did not become CLOB_VERIFIED."""
+    """Why a gamma flag did not become an executable CLOB plan."""
 
     NO_BOOK = "no_book"
     MISSING_BID_ASK = "missing_bid_ask"
@@ -32,6 +32,12 @@ class RejectReason(str, Enum):
     BELOW_MIN_EDGE = "below_min_edge"
     ILLIQUID = "illiquid"
     INVALID_PRICES = "invalid_prices"
+    # Phase 2 — complete-set plan validation failures
+    STALE_BOOK = "stale_book"
+    UNKNOWN_FEE = "unknown_fee"
+    INVALID_TICK = "invalid_tick"
+    BELOW_MIN_SIZE = "below_min_size"
+    UNSUPPORTED = "unsupported"
     OTHER = "other"
 
 

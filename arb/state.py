@@ -199,8 +199,13 @@ class OpportunityStore:
         bid_depth: float | None = None,
         hypothetical_pnl: float | None = None,
         scan_run_id: int | None = None,
+        plan_record: dict | None = None,
     ) -> int:
         now = _now()
+        payload = opp.to_dict()
+        if plan_record is not None:
+            # Attach the immutable complete-set execution plan for audit.
+            payload = {**payload, "plan": plan_record}
         with self._connect() as conn:
             cur = conn.execute(
                 """
@@ -227,7 +232,7 @@ class OpportunityStore:
                     bid_depth,
                     hypothetical_pnl,
                     scan_run_id,
-                    json.dumps(opp.to_dict()),
+                    json.dumps(payload),
                 ),
             )
             opp_id = int(cur.lastrowid)

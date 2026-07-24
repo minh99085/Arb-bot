@@ -5,17 +5,87 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from arb.config import ArbConfig
-from arb.dutch_book import Opportunity, detect_from_asks, detect_from_bids, detect_from_prices
+from arb.dutch_book import ArbKind, Opportunity, detect_from_prices
 from arb.ledger import append_ledger
 from arb.metrics import finish_metrics, start_metrics
 from arb.models import OppState, RejectReason
+from arb.plan import (
+    BookSnapshot,
+    CompleteSetPlan,
+    PlanRejectReason,
+    build_complete_set_plan,
+)
 from arb.polymarket_data import (
-    best_bid_ask,
     fetch_orderbook,
     iter_markets,
     market_tokens,
 )
 from arb.state import OpportunityStore
+
+# Map a plan rejection to the pipeline's RejectReason vocabulary.
+_PLAN_REJECT_MAP: dict[PlanRejectReason, RejectReason] = {
+    PlanRejectReason.NO_BOOK: RejectReason.NO_BOOK,
+    PlanRejectReason.STALE_BOOK: RejectReason.STALE_BOOK,
+    PlanRejectReason.MISSING_OUTCOME: RejectReason.MISSING_BID_ASK,
+    PlanRejectReason.INVALID_TICK: RejectReason.INVALID_TICK,
+    PlanRejectReason.BELOW_MIN_SIZE: RejectReason.BELOW_MIN_SIZE,
+    PlanRejectReason.INVALID_PRICES: RejectReason.INVALID_PRICES,
+    PlanRejectReason.NEG_RISK_INELIGIBLE: RejectReason.UNSUPPORTED,
+    PlanRejectReason.INELIGIBLE_STRATEGY: RejectReason.UNSUPPORTED,
+    PlanRejectReason.UNKNOWN_FEE: RejectReason.UNKNOWN_FEE,
+    PlanRejectReason.INSUFFICIENT_DEPTH: RejectReason.ILLIQUID,
+    PlanRejectReason.NEGATIVE_NET_PNL: RejectReason.EDGE_EVAPORATED,
+    PlanRejectReason.ZERO_BUDGET: RejectReason.OTHER,
+    PlanRejectReason.OTHER: RejectReason.OTHER,
+}
+
+
+def reject_reason_for_plan(reason: PlanRejectReason) -> RejectReason:
+    return _PLAN_REJECT_MAP.get(reason, RejectReason.OTHER)
+
+
+def build_buy_plan(
+    config: ArbConfig,
+    *,
+    condition_id: str,
+    slug: str,
+    question: str,
+    outcomes: list[str],
+    snapshots: list[BookSnapshot],
+) -> CompleteSetPlan:
+    """Build a BUY_COMPLETE_SET_MERGE plan from book snapshots using the config."""
+    return build_complete_set_plan(
+        condition_id=condition_id,
+        slug=slug,
+        question=question,
+        outcomes=list(outcomes),
+        snapshots=snapshots,
+        fee_model=config.fee_model(),
+        cash_budget_usd=config.max_position_usd,
+        max_book_age_sec=config.max_book_age_sec,
+        conversion_cost_usd=config.conversion_cost_usd,
+        depth_levels=config.plan_depth(),
+        require_tick=True,
+    )
+
+
+def opportunity_from_plan(plan: CompleteSetPlan, *, source: str = "clob_asks") -> Opportunity:
+    """Derive an executable BUY_BUNDLE Opportunity from a valid complete-set plan."""
+    prices = [leg.vwap_ask for leg in plan.legs]
+    token_ids = [leg.token_id for leg in plan.legs]
+    return Opportunity(
+        kind=ArbKind.BUY_BUNDLE,
+        condition_id=plan.condition_id,
+        slug=plan.slug,
+        question=plan.question,
+        outcomes=list(plan.outcomes),
+        token_ids=token_ids,
+        prices=prices,
+        total=round(sum(prices), 6),
+        edge=plan.net_edge_per_set,
+        edge_bps=round(plan.net_edge_per_set * 10_000, 2),
+        source=source,
+    )
 
 
 @dataclass
@@ -24,6 +94,7 @@ class VerifyOutcome:
     reject_reason: RejectReason | None
     ask_depth: float | None = None
     bid_depth: float | None = None
+    plan: CompleteSetPlan | None = None
 
 
 @dataclass
@@ -55,17 +126,6 @@ def _market_meta(market: dict) -> tuple[str, str, str]:
         market.get("slug") or "",
         market.get("conditionId") or market.get("condition_id") or "",
     )
-
-
-def _book_depth(book: dict, *, side: str) -> float:
-    levels = book.get(side) or []
-    total = 0.0
-    for level in levels[:5]:
-        try:
-            total += float(level.get("size", 0))
-        except (TypeError, ValueError):
-            continue
-    return total
 
 
 def scan_gamma(config: ArbConfig) -> tuple[int, list[Opportunity]]:
@@ -105,58 +165,52 @@ def scan_gamma(config: ArbConfig) -> tuple[int, list[Opportunity]]:
     return scanned, hits
 
 
+def _leg_bid_depth(snap: BookSnapshot, depth_levels: int | None) -> float:
+    levels = snap.bids if not depth_levels or depth_levels <= 0 else snap.bids[:depth_levels]
+    return round(sum(lvl.size for lvl in levels), 8)
+
+
 def verify_one(config: ArbConfig, opp: Opportunity) -> VerifyOutcome:
-    asks: list[float] = []
-    bids: list[float] = []
-    ask_depth = 0.0
-    bid_depth = 0.0
+    """Verify a gamma candidate by building an executable complete-set plan.
+
+    A candidate is only CLOB_VERIFIED when a valid BUY_COMPLETE_SET_MERGE plan
+    exists (real L2/L3 VWAP, common q, fresh books, known fees, positive net).
+    Sell-side violations are not executable in this phase and are rejected here.
+    """
+    depth = config.plan_depth()
+    snapshots: list[BookSnapshot] = []
     for token_id in opp.token_ids:
         book = fetch_orderbook(token_id)
         if not book:
             return VerifyOutcome(None, RejectReason.NO_BOOK)
-        best_bid, best_ask = best_bid_ask(book)
-        if best_ask is None or best_bid is None:
+        snap = BookSnapshot.from_book(
+            token_id,
+            book,
+            source="rest",
+            default_tick_size=config.assumed_tick_size,
+            default_min_order_size=config.assumed_min_order_size,
+        )
+        if not snap.asks or snap.best_bid is None:
             return VerifyOutcome(None, RejectReason.MISSING_BID_ASK)
-        asks.append(best_ask)
-        bids.append(best_bid)
-        ask_depth += _book_depth(book, side="asks")
-        bid_depth += _book_depth(book, side="bids")
+        snapshots.append(snap)
 
-    if ask_depth < config.min_book_depth and bid_depth < config.min_book_depth:
-        return VerifyOutcome(None, RejectReason.ILLIQUID, ask_depth, bid_depth)
+    # Capacity is the weakest leg — never aggregated across legs.
+    ask_depth = min(s.ask_capacity(depth_levels=depth) for s in snapshots)
+    bid_depth = min(_leg_bid_depth(s, depth) for s in snapshots)
 
-    buy_opp = detect_from_asks(
-        question=opp.question,
-        slug=opp.slug,
+    plan = build_buy_plan(
+        config,
         condition_id=opp.condition_id,
-        outcomes=opp.outcomes,
-        token_ids=opp.token_ids,
-        asks=asks,
-        min_edge=config.min_edge,
-        fee_rate=config.fee_rate,
-    )
-    sell_opp = detect_from_bids(
-        question=opp.question,
         slug=opp.slug,
-        condition_id=opp.condition_id,
-        outcomes=opp.outcomes,
-        token_ids=opp.token_ids,
-        bids=bids,
-        min_edge=config.min_edge,
-        fee_rate=config.fee_rate,
+        question=opp.question,
+        outcomes=list(opp.outcomes),
+        snapshots=snapshots,
     )
+    if not plan.executable:
+        reason = reject_reason_for_plan(plan.rejection.reason) if plan.rejection else RejectReason.OTHER
+        return VerifyOutcome(None, reason, ask_depth, bid_depth, plan=plan)
 
-    verified: Opportunity | None = None
-    if buy_opp and sell_opp:
-        verified = buy_opp if buy_opp.edge_bps >= sell_opp.edge_bps else sell_opp
-    elif buy_opp:
-        verified = buy_opp
-    elif sell_opp:
-        verified = sell_opp
-
-    if verified is None:
-        return VerifyOutcome(None, RejectReason.EDGE_EVAPORATED, ask_depth, bid_depth)
-    return VerifyOutcome(verified, None, ask_depth, bid_depth)
+    return VerifyOutcome(opportunity_from_plan(plan), None, ask_depth, bid_depth, plan=plan)
 
 
 def verify_with_books(
@@ -223,14 +277,16 @@ def run_scan(
         for opp in verified_hits:
             key = f"{opp.condition_id}:{opp.kind.value}"
             meta = outcome_by_key.get(key)
+            plan = meta.plan if meta else None
             store.save(
                 opp,
                 state=OppState.CLOB_VERIFIED,
                 verified=True,
                 ask_depth=meta.ask_depth if meta else None,
                 bid_depth=meta.bid_depth if meta else None,
-                hypothetical_pnl=_hypothetical_pnl(opp),
+                hypothetical_pnl=plan.net_cash_pnl_usd if plan else _hypothetical_pnl(opp),
                 scan_run_id=run_id,
+                plan_record=plan.to_dict() if plan else None,
             )
         for opp, reason in rejected:
             store.save(

@@ -8,8 +8,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
+from datetime import datetime, timezone
+
 from arb.config import ArbConfig
-from arb.dutch_book import Opportunity, detect_from_asks, detect_from_bids, detect_from_prices
+from arb.dutch_book import Opportunity, detect_from_prices
+from arb.plan import BookLevel, BookSnapshot
 from arb.polymarket_data import (
     _market_volume,
     best_bid_ask,
@@ -17,6 +20,12 @@ from arb.polymarket_data import (
     iter_event_markets,
     market_tokens,
 )
+from arb.scanner import build_buy_plan, opportunity_from_plan
+
+# Top-of-book alpha uses a sentinel per-leg depth so the cash budget (not an
+# unknown per-leg depth) bounds the coarse plan; real L2 walking is the
+# scanner's job (verify_one).
+_TOB_DEPTH = 1e12
 
 
 @dataclass
@@ -169,33 +178,31 @@ def _analyze_market(config: ArbConfig, market: dict) -> SpreadRow | None:
             opportunity=None,
         )
 
-    buy_opp = detect_from_asks(
-        question=question,
-        slug=slug,
+    # Executability is decided by the common complete-set plan builder (BUY only).
+    # Sell-side spreads still show in the report but are not executable here.
+    now = datetime.now(timezone.utc).isoformat()
+    snapshots = [
+        BookSnapshot(
+            token_id=str(tid),
+            asks=(BookLevel(price=float(ask), size=_TOB_DEPTH),),
+            bids=(),
+            captured_at=now,
+            source="alpha_top_of_book",
+            tick_size=config.assumed_tick_size,
+            min_order_size=config.assumed_min_order_size,
+            neg_risk=False,
+        )
+        for tid, ask in zip(tokens, asks)
+    ]
+    plan = build_buy_plan(
+        config,
         condition_id=condition_id,
-        outcomes=outcomes,
-        token_ids=tokens,
-        asks=asks,
-        min_edge=config.min_edge,
-        fee_rate=config.fee_rate,
-    )
-    sell_opp = detect_from_bids(
-        question=question,
         slug=slug,
-        condition_id=condition_id,
-        outcomes=outcomes,
-        token_ids=tokens,
-        bids=bids,
-        min_edge=config.min_edge,
-        fee_rate=config.fee_rate,
+        question=question,
+        outcomes=list(outcomes),
+        snapshots=snapshots,
     )
-    opportunity: Opportunity | None = None
-    if buy_opp and sell_opp:
-        opportunity = buy_opp if buy_opp.edge_bps >= sell_opp.edge_bps else sell_opp
-    elif buy_opp:
-        opportunity = buy_opp
-    elif sell_opp:
-        opportunity = sell_opp
+    opportunity: Opportunity | None = opportunity_from_plan(plan) if plan.executable else None
 
     return SpreadRow(
         question=question,

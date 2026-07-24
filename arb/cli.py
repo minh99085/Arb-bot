@@ -52,28 +52,30 @@ def cmd_scan(args: argparse.Namespace) -> int:
     result = run_scan(config, gamma_only=args.gamma_only, persist=not args.no_persist)
 
     if args.json:
+        # Candidates (gamma flags) are NOT executable; only executable_plans
+        # (BUY_COMPLETE_SET_MERGE) have a validated complete-set plan.
         payload = {
             "phase": 2 if not config.study_mode else 1,
             "study_mode": config.study_mode,
+            "strategy": "BUY_COMPLETE_SET_MERGE",
             "run_id": result.run_id,
             "scanned": result.scanned,
-            "gamma_hits": [o.to_dict() for o in result.gamma_hits],
-            "verified_hits": [o.to_dict() for o in result.verified_hits],
+            "candidates": [o.to_dict() for o in result.gamma_hits],
+            "executable_plans": [o.to_dict() for o in result.verified_hits],
             "rejected": [
                 {"opportunity": o.to_dict(), "reason": r.value} for o, r in result.rejected
             ],
-            "hits": [o.to_dict() for o in result.all_hits],
         }
         print(json.dumps(payload, indent=2))
         return 0
 
     mode = "study" if config.study_mode else "execution"
-    print(f"Scan ({mode}) — run_id={result.run_id}")
+    print(f"Scan ({mode}) — run_id={result.run_id}  strategy=BUY_COMPLETE_SET_MERGE")
     print(f"Scanned {result.scanned} active markets")
-    print(f"Gamma flags: {len(result.gamma_hits)}")
+    print(f"Gamma candidates (not executable): {len(result.gamma_hits)}")
     if not args.gamma_only:
-        print(f"CLOB-verified: {len(result.verified_hits)}")
-        print(f"Rejected after book: {len(result.rejected)}")
+        print(f"Executable complete-set plans: {len(result.verified_hits)}")
+        print(f"Rejected after plan build: {len(result.rejected)}")
         if result.rejected:
             reasons: dict[str, int] = {}
             for _, reason in result.rejected:
@@ -82,21 +84,21 @@ def cmd_scan(args: argparse.Namespace) -> int:
     print()
 
     if result.verified_hits:
-        print(f"Verified opportunities ({len(result.verified_hits)}):")
+        print(f"Executable complete-set plans ({len(result.verified_hits)}):")
         for opp in result.verified_hits[: args.top]:
             _print_opportunity(opp, position_usd=config.max_position_usd)
             print()
     elif result.gamma_hits and args.gamma_only:
-        print(f"Gamma candidates ({len(result.gamma_hits)}):")
+        print(f"Gamma candidates — NOT executable until a valid plan exists ({len(result.gamma_hits)}):")
         for opp in result.gamma_hits[: args.top]:
             _print_opportunity(opp, position_usd=config.max_position_usd)
             print()
     else:
-        print("No CLOB-verified Dutch-book opportunities above threshold.")
+        print("No executable complete-set plans above threshold.")
         if result.gamma_hits:
             print(
-                f"  ({len(result.gamma_hits)} gamma flags — run `python -m arb alpha` "
-                f"for direct CLOB spread report)"
+                f"  ({len(result.gamma_hits)} gamma candidates detected — candidates are "
+                f"NOT executable; run `python -m arb alpha` for the CLOB spread report)"
             )
 
     if config.alert_on_verified and not args.quiet:

@@ -1,72 +1,79 @@
-# Phase 2 — Execution Plane (Money Loop)
+# Phase 2 — Executable Complete-Set Plan (Shadow/Paper)
 
-Status: **COMPLETE** (paper path). Live CLOB still stubbed.
+Status: **COMPLETE** (deterministic plan builder). Live CLOB still disabled.
 
 ## Goal
 
-Close the deterministic money loop:
+Replace the old dollar-per-leg / top-of-book arithmetic with a single,
+deterministic, auditable **complete-set execution plan** for research and
+shadow/paper. Only one strategy is implemented:
 
 ```
-scan → detect → CLOB verify → risk gate → paper execute → reconcile
+BUY_COMPLETE_SET_MERGE
 ```
 
-No LLM on this path.
+Buy one identical share quantity `q` of every outcome (a complete set) at real
+L2/L3 depth, then merge/redeem the set for $1 each.
+
+```
+gross_cost_usd   = q * sum(all-leg L2/L3 VWAP asks)
+net_cash_pnl_usd = q - gross_cost_usd - fees_usd - conversion_costs_usd
+```
+
+No LLM on this path. Nothing here places live orders or realizes PnL.
 
 ## Delivered
 
 | Module | Role |
 |--------|------|
-| `arb/risk.py` | Kill switch, study gate, size, open caps, daily loss/trades, duplicates |
-| `arb/paper.py` | Simulated fills at book + slippage/fees |
-| `arb/execute.py` | RISK_OK → ORDER_PLACED → FILLED (paper); live hard-gated |
-| `arb/reconcile.py` | Expected vs realized PnL; settle paper → SETTLED → CLOSED |
-| `arb/state.py` | `fills` table, transitions, open-position helpers |
-| CLI | `trade --paper`, `reconcile`, `loop --paper` |
+| `arb/plan.py` | Typed models + `build_complete_set_plan` + venue fee interface + shadow fill |
+| `arb/scanner.py` | `verify_one` → CLOB_VERIFIED **only** when an executable plan exists |
+| `arb/reverify.py` | WS-cache re-verify via the same plan builder |
+| `arb/alpha.py` | Pre-deploy spread report; "verified" = executable plan |
+| `arb/risk.py` | Sizes from the plan (shares vs dollars kept separate) |
+| `arb/paper.py` | Paper fills are **shadow** simulations from the plan |
+| `arb/state.py` | Persists the immutable plan record in the opportunity payload |
 
-## State machine (full)
+## Domain models (`arb/plan.py`)
 
-```
-DISCOVERED → GAMMA_FLAG → CLOB_VERIFIED → RISK_OK → ORDER_PLACED → FILLED → SETTLED → CLOSED
-                    ↘ REJECTED          ↘ REJECTED
-```
+- `BookLevel`, `BookSnapshot` (with source timestamp, tick size, min order size)
+- `LegEstimate` (per-leg q, VWAP, gross cost, top-of-book, capacity, levels consumed)
+- `FeeQuote` + `VenueFeeModel` interface (`PolymarketFeeModel`, `UnknownFeeModel`)
+- `CompleteSetPlan` (immutable record) with the common `q_complete_sets` and the
+  strictly-separate dollar fields: `cash_budget_usd`, `gross_notional_usd`,
+  `fees_usd`, `slippage_usd`, `conversion_costs_usd`, `net_cash_pnl_usd`
+- `PlanRejection` + `PlanRejectReason`
+- `ShadowFill` (labeled `shadow`/`simulated`; `realized_pnl_usd` is always `None`)
 
-## Commands
+## Guarantees
 
-```bash
-# Exit study and paper-trade verified opps
-ARB_STUDY_MODE=false python -m arb trade --paper --limit 5
+- One identical `q` for **every** outcome; capacity is the **weakest** leg
+  (never aggregated across legs).
+- L2/L3 depth is walked for a real VWAP — a top-of-book candidate can be
+  invalidated at depth.
+- Dollars and shares are separate fields everywhere.
+- Tick size, minimum order size, freshness, outcome count, and rule eligibility
+  are validated; fees come from a venue interface and an **unknown fee fails
+  closed** (plan rejected).
+- Paper/shadow fills are never realized PnL (reconcile leaves them UNRESOLVED,
+  per Phase 1).
+- Scan reports distinguish a **candidate** (gamma flag) from an **executable
+  plan**.
 
-# Or one-shot loop
-python -m arb loop --paper --limit 50 --trade-limit 5
-
-# Reconcile / settle paper
-python -m arb reconcile
-python -m arb status
-```
-
-## Env (Phase 2)
+## Env (Phase 2 additions)
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `ARB_STUDY_MODE` | `true` | Must be `false` to trade |
-| `ARB_EXEC_MODE` | `paper` | `paper` \| `live` \| `disabled` |
-| `ARB_KILL_SWITCH` | `false` | Halt all new trades |
-| `ARB_MAX_POSITION_USD` | `25` | Per-trade size cap |
-| `ARB_MAX_OPEN_POSITIONS` | `5` | Concurrent open cap |
-| `ARB_MAX_DAILY_TRADES` | `20` | Daily fill cap |
-| `ARB_MAX_DAILY_LOSS_USD` | `50` | Daily realized loss halt |
-| `ARB_PAPER_SLIPPAGE_BPS` | `10` | Paper fill haircut |
-| `ARB_ALLOW_LIVE` | `false` | Required for live CLOB (Phase 6) |
-| `POLYMARKET_PRIVATE_KEY` | — | Required for live |
+| `ARB_FEE_VENUE` | `polymarket` | Venue fee model; unknown venue → plan fails closed |
+| `ARB_MAX_BOOK_AGE_SEC` | `30` | Book freshness window for a valid plan |
+| `ARB_CONVERSION_COST_USD` | `0` | Merge/redeem cost per plan |
+| `ARB_ASSUMED_TICK_SIZE` | `0.01` | Used when a book omits tick size |
+| `ARB_ASSUMED_MIN_ORDER_SIZE` | `5` | Used when a book omits min order size |
+| `ARB_PLAN_DEPTH_LEVELS` | `10` | L2/L3 depth to walk (0 = all levels) |
 
-## Explicitly out of scope (later phases)
+## Explicitly out of scope (this phase)
 
-- Live CLOB → Phase 6 (`arb/clob_live.py`)
-- WebSocket feeds (Phase 3)
-- LLM postmortem (Phase 4 deterministic; Phase 6 optional Grok)
-- Cloud 24/7 worker (Phase 5)
-
-## Phase 3 gate
-
-Paper loop runs cleanly; reconcile gap ≈ 0; kill switch tested.
-Then add WebSocket re-verify.
+- Live orders
+- Sell-complete-set, naked shorting, negative-risk execution
+- Directional prediction
+- Kalshi, Robinhood adapters

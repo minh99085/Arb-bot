@@ -62,6 +62,27 @@ Truthfulness rules: expected PnL is **never** auto-realized (fills stay
 `SELL_BUNDLE` is a research signal whose execution is `UNSUPPORTED_STRATEGY` for
 now; a live order acknowledgement does not become `FILLED`.
 
+## Complete-Set Execution Plan (Phase 2)
+
+Executability is decided by a single deterministic plan builder (`arb/plan.py`)
+for the only supported strategy, **`BUY_COMPLETE_SET_MERGE`**: buy one identical
+share quantity `q` of every outcome at real L2/L3 depth, then merge/redeem for
+$1 each.
+
+```
+gross_cost_usd   = q * sum(all-leg L2/L3 VWAP asks)
+net_cash_pnl_usd = q - gross_cost_usd - fees_usd - conversion_costs_usd
+```
+
+- A **gamma candidate is not executable** — only a validated `CompleteSetPlan`
+  is. `scan` reports the two separately (`candidates` vs `executable_plans`).
+- Capacity is the **weakest leg** (never aggregated); dollars and shares are
+  separate fields; tick size, min order size, freshness, outcome count, and
+  rule eligibility are validated; an **unknown fee fails closed**.
+- Paper fills are **shadow** simulations from captured snapshots — never realized.
+- Not implemented: live orders, sell-complete-set, naked shorting, negative-risk
+  execution, directional prediction, Kalshi, Robinhood.
+
 ## Phase 1 — Study Mode
 
 ```bash

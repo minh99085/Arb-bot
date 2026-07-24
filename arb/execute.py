@@ -121,6 +121,7 @@ def execute_opportunity(
         )
 
     row = store.get(opportunity_id) if opportunity_id is not None else None
+    exec_plan = None  # L2/L3 complete-set plan from a live CLOB refresh, if any
 
     if config.paper_realistic and config.exec_mode == ExecMode.PAPER:
         if row and row.get("state") == OppState.GAMMA_FLAG.value:
@@ -168,6 +169,7 @@ def execute_opportunity(
         opp = refresh.opportunity
         ask_depth = refresh.ask_depth
         bid_depth = refresh.bid_depth
+        exec_plan = refresh.plan
 
     risk = check_risk(
         config,
@@ -176,6 +178,7 @@ def execute_opportunity(
         ask_depth=ask_depth,
         bid_depth=bid_depth,
         category=category,
+        plan=exec_plan,
     )
     if not risk.ok:
         if opportunity_id is not None:
@@ -289,8 +292,8 @@ def execute_opportunity(
             live=live,
         )
 
-    # Paper path — uses refreshed CLOB prices when realistic mode is on
-    fill = simulate_paper_fill(config, opp, size_usd=risk.size_usd)
+    # Paper path — shadow fill via the complete-set plan (L2 plan when available)
+    fill = simulate_paper_fill(config, opp, size_usd=risk.size_usd, plan=exec_plan)
     store.transition(opp_id, OppState.ORDER_PLACED, reason="paper_order")
     fill_id = store.record_fill(
         opportunity_id=opp_id,
