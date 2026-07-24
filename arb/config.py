@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from arb.models import ExecMode
+from arb.models import ExecMode, SafetyMode
 
 
 def _hermes_home() -> Path:
@@ -22,6 +22,10 @@ class ArbConfig:
     and env vars can tighten or loosen further within safety rails.
     """
 
+    # Execution safety — scanner/shadow-first. SCAN_ONLY is the safe default;
+    # any order/fill creation requires an explicit opt-in (see SafetyMode).
+    safety_mode: SafetyMode = SafetyMode.SCAN_ONLY
+    paper_execution_enabled: bool = False
     min_edge_bps: float = 25.0
     taker_fee_bps: float = 10.0
     page_size: int = 100
@@ -57,8 +61,9 @@ class ArbConfig:
     ws_watch_sec: float = 15.0
     ws_max_assets: int = 80
     ws_seed_rest: bool = True
-    # Self-tune
-    self_tune: bool = True
+    # Self-tune — OFF by default. When disabled, historical self_tune.json
+    # overrides are neither loaded nor applied (old files are kept for audit).
+    self_tune: bool = False
 
     @property
     def min_edge(self) -> float:
@@ -116,6 +121,12 @@ class ArbConfig:
         except ValueError:
             exec_mode = ExecMode.PAPER
 
+        safety_raw = (os.environ.get("ARB_SAFETY_MODE") or "scan_only").lower().strip()
+        try:
+            safety_mode = SafetyMode(safety_raw)
+        except ValueError:
+            safety_mode = SafetyMode.SCAN_ONLY
+
         blocklist = tuple(
             x.strip().lower()
             for x in (os.environ.get("ARB_CATEGORY_BLOCKLIST") or "").split(",")
@@ -123,6 +134,8 @@ class ArbConfig:
         )
         state_dir = os.environ.get("ARB_STATE_DIR")
         cfg = cls(
+            safety_mode=safety_mode,
+            paper_execution_enabled=_bool("ARB_PAPER_EXECUTION_ENABLED", False),
             min_edge_bps=_float("ARB_MIN_EDGE_BPS", 25.0),
             taker_fee_bps=_float("ARB_TAKER_FEE_BPS", 10.0),
             page_size=int(os.environ.get("ARB_PAGE_SIZE", "100")),
@@ -157,7 +170,7 @@ class ArbConfig:
             paper_realistic=_bool("ARB_PAPER_REALISTIC", True),
             paper_min_edge_bps=_float("ARB_PAPER_MIN_EDGE_BPS", 15.0),
             alpha_workers=int(os.environ.get("ARB_ALPHA_WORKERS", "12")),
-            self_tune=_bool("ARB_SELF_TUNE", True),
+            self_tune=_bool("ARB_SELF_TUNE", False),
         )
         if apply_self_tune and cfg.self_tune:
             try:
@@ -211,12 +224,31 @@ class ArbConfig:
     def trading_enabled(self) -> bool:
         return bool(os.environ.get("POLYMARKET_PRIVATE_KEY", "").strip())
 
+    def paper_execution_allowed(self) -> bool:
+        """Simulated order/fill creation is only allowed under an explicit opt-in.
+
+        Requires SafetyMode.PAPER_EXECUTION *and* the separate
+        ARB_PAPER_EXECUTION_ENABLED gate, with the kill switch off and study
+        mode off. Shadow observation collection never needs this.
+        """
+        return (
+            self.safety_mode == SafetyMode.PAPER_EXECUTION
+            and self.paper_execution_enabled
+            and not self.kill_switch
+            and not self.study_mode
+        )
+
     def live_allowed(self) -> bool:
         return (
-            self.allow_live
+            self.safety_mode == SafetyMode.LIVE
+            and self.allow_live
             and self.exec_mode == ExecMode.LIVE
             and self.trading_enabled()
             and not self.dry_run
             and not self.kill_switch
             and not self.study_mode
         )
+
+    def execution_allowed(self) -> bool:
+        """Any order/fill creation (paper or live) is permitted right now."""
+        return self.paper_execution_allowed() or self.live_allowed()

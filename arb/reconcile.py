@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from arb.config import ArbConfig
-from arb.models import OppState
 from arb.state import OpportunityStore
 
 
@@ -19,6 +18,7 @@ class ReconcileReport:
     realized_pnl_sum: float
     pnl_gap: float
     settled: int
+    unresolved: int
     notes: list[str]
 
     def to_dict(self) -> dict[str, Any]:
@@ -29,6 +29,7 @@ class ReconcileReport:
             "realized_pnl_sum": self.realized_pnl_sum,
             "pnl_gap": self.pnl_gap,
             "settled": self.settled,
+            "unresolved": self.unresolved,
             "notes": self.notes,
         }
 
@@ -37,35 +38,44 @@ def reconcile(
     config: ArbConfig,
     store: OpportunityStore,
     *,
-    settle_paper: bool = True,
+    settle_paper: bool = False,
 ) -> ReconcileReport:
-    """Compare expected vs realized PnL and optionally settle paper fills.
+    """Report expected vs realized PnL. Never converts expected → realized.
 
-    Paper mode: expected_pnl is treated as realized at reconcile time (instant
-    resolution assumption for study). Live mode will use actual settlement later.
+    Honest accounting: expected PnL is a *hypothesis*, not money. There is no
+    verified settlement model yet, so paper (and un-settled live) fills stay
+    UNRESOLVED and are NOT auto-closed. ``settled`` is therefore always 0 and
+    ``realized_pnl_sum`` only reflects genuinely settled fills (none in this
+    phase). The ``settle_paper`` argument is retained for call-site
+    compatibility but no longer triggers synthetic realization.
     """
     fills = store.list_fills(limit=10_000)
     notes: list[str] = []
     expected = 0.0
     realized = 0.0
-    settled = 0
+    unresolved = 0
 
     for fill in fills:
         expected += float(fill.get("expected_pnl") or 0.0)
         realized_val = fill.get("realized_pnl")
-        if realized_val is None and settle_paper and fill.get("mode") == "paper":
-            # Instant-settle paper: mark realized = expected, advance opp to SETTLED/CLOSED
-            realized_val = float(fill.get("expected_pnl") or 0.0)
-            store.set_fill_realized(int(fill["id"]), float(realized_val))
-            opp_id = int(fill["opportunity_id"])
-            store.transition(opp_id, OppState.SETTLED, reason="paper_reconcile")
-            store.transition(opp_id, OppState.CLOSED, reason="paper_closed")
-            settled += 1
-        if realized_val is not None:
+        if realized_val is None:
+            unresolved += 1
+        else:
             realized += float(realized_val)
 
     open_n = store.count_open()
     gap = round(realized - expected, 6)
+
+    if unresolved:
+        notes.append(
+            f"{unresolved} fill(s) UNRESOLVED — no settlement model yet; "
+            "expected PnL is never auto-realized"
+        )
+    if settle_paper:
+        notes.append(
+            "Auto-settlement is disabled (safety): paper expected PnL is not "
+            "converted to realized PnL"
+        )
     if abs(gap) > 1e-6:
         notes.append(f"PnL gap expected vs realized: {gap}")
     else:
@@ -80,7 +90,8 @@ def reconcile(
         expected_pnl_sum=round(expected, 6),
         realized_pnl_sum=round(realized, 6),
         pnl_gap=gap,
-        settled=settled,
+        settled=0,
+        unresolved=unresolved,
         notes=notes,
     )
 
@@ -97,6 +108,7 @@ def _append_reconcile_ledger(config: ArbConfig, report: ReconcileReport) -> None
         f"## Reconcile — {now}\n\n"
         f"- Fills: {report.fills}\n"
         f"- Settled this run: {report.settled}\n"
+        f"- Unresolved: {report.unresolved}\n"
         f"- Open positions: {report.open_positions}\n"
         f"- Expected PnL: ${report.expected_pnl_sum:.4f}\n"
         f"- Realized PnL: ${report.realized_pnl_sum:.4f}\n"

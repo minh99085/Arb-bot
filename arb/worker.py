@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from arb.config import ArbConfig
-from arb.models import ExecMode, OppState
+from arb.models import OppState
 from arb.postmortem import run_postmortem
 from arb.reconcile import reconcile
 from arb.scanner import format_alert, run_scan
@@ -74,7 +74,7 @@ class WorkerConfig:
             ws_sec=_f("ARB_WORKER_WS_SEC", 12.0),
             paper=_b("ARB_WORKER_PAPER", True),
             run_postmortem=_b("ARB_WORKER_POSTMORTEM", True),
-            run_self_tune=_b("ARB_SELF_TUNE", True),
+            run_self_tune=_b("ARB_SELF_TUNE", False),
             heartbeat_sec=_f("ARB_WORKER_HEARTBEAT_SEC", 60.0),
         )
 
@@ -124,11 +124,16 @@ class ArbWorker:
         self._next_heartbeat = 0.0
 
     def _reload_config(self) -> ArbConfig:
-        """Merge self_tune.json overrides onto the worker's ArbConfig in place."""
+        """Merge self_tune.json overrides onto the worker's ArbConfig in place.
+
+        When self-tune is disabled, historical overrides are neither loaded nor
+        applied (old files are preserved on disk for audit).
+        """
+        if not self.arb.self_tune:
+            return self.arb
         from arb.self_tune import apply_overrides_to_config, load_overrides
 
-        if self.arb.self_tune or self.wc.run_self_tune:
-            self.arb = apply_overrides_to_config(self.arb)
+        self.arb = apply_overrides_to_config(self.arb)
         ov = load_overrides(self.arb)
         if "ARB_WORKER_TRADE_LIMIT" in ov:
             self.wc.trade_limit = int(round(ov["ARB_WORKER_TRADE_LIMIT"]))
@@ -185,67 +190,62 @@ class ArbWorker:
         }
 
     def tick_loop(self) -> dict[str, Any]:
-        """One money-loop turn: scan → optional WS → paper trade → reconcile."""
+        """One loop turn: scan (shadow observations) → optional WS → [execute] → reconcile.
+
+        The scanner mode is NEVER overridden here. Order/fill creation happens
+        only when the config's safety mode explicitly permits it
+        (PAPER_EXECUTION + ARB_PAPER_EXECUTION_ENABLED, or a fully-gated LIVE).
+        Otherwise the loop is scan/shadow-only.
+        """
         from arb.execute import execute_batch
 
-        base = self._reload_config()
-        cfg = base.with_overrides(
-            max_markets=self.wc.scan_limit,
-            study_mode=False if self.wc.paper else base.study_mode,
-            exec_mode=ExecMode.PAPER if self.wc.paper else base.exec_mode,
-        )
-        result = run_scan(cfg, gamma_only=False, persist=True)
+        cfg = self._reload_config().with_overrides(max_markets=self.wc.scan_limit)
+        result = run_scan(cfg, gamma_only=False, persist=True)  # shadow observations
         store = OpportunityStore(cfg.state_db)
-        rows = store.top_by_edge(limit=self.wc.trade_limit, state=OppState.CLOB_VERIFIED)
-        gamma_fallback = False
-        if (
-            not rows
-            and cfg.paper_gamma_fallback
-            and not cfg.paper_realistic
-            and self.wc.paper
-            and cfg.exec_mode == ExecMode.PAPER
-        ):
-            rows = store.top_by_edge(limit=self.wc.trade_limit, state=OppState.GAMMA_FLAG)
-            gamma_fallback = bool(rows)
 
-        if self.wc.use_ws and cfg.ws_enabled and result.verified_hits and not gamma_fallback:
-            from arb.reverify import reverify_opportunities
-            from arb.ws_feed import run_feed_sync
+        execute_enabled = cfg.execution_allowed()
+        trade_results = []
+        if execute_enabled:
+            rows = store.top_by_edge(limit=self.wc.trade_limit, state=OppState.CLOB_VERIFIED)
+            if self.wc.use_ws and cfg.ws_enabled and result.verified_hits:
+                from arb.reverify import reverify_opportunities
+                from arb.ws_feed import run_feed_sync
 
-            asset_ids: list[str] = []
-            for opp in result.verified_hits:
-                asset_ids.extend(opp.token_ids)
-            asset_ids = list(dict.fromkeys(asset_ids))[: cfg.ws_max_assets]
-            cache = run_feed_sync(
-                asset_ids,
-                duration_sec=min(cfg.ws_watch_sec, self.wc.ws_sec),
-                ws_url=cfg.ws_url,
-                seed_rest=cfg.ws_seed_rest,
-            )
-            rv = reverify_opportunities(cfg, cache, result.verified_hits)
-            valid_ids = {o.condition_id for o in rv.still_valid}
-            rows = [
-                r for r in rows if r["condition_id"] in valid_ids
-            ][: self.wc.trade_limit]
+                asset_ids: list[str] = []
+                for opp in result.verified_hits:
+                    asset_ids.extend(opp.token_ids)
+                asset_ids = list(dict.fromkeys(asset_ids))[: cfg.ws_max_assets]
+                cache = run_feed_sync(
+                    asset_ids,
+                    duration_sec=min(cfg.ws_watch_sec, self.wc.ws_sec),
+                    ws_url=cfg.ws_url,
+                    seed_rest=cfg.ws_seed_rest,
+                )
+                rv = reverify_opportunities(cfg, cache, result.verified_hits)
+                valid_ids = {o.condition_id for o in rv.still_valid}
+                rows = [r for r in rows if r["condition_id"] in valid_ids][: self.wc.trade_limit]
 
-        pairs = [(store.opportunity_from_row(r), int(r["id"])) for r in rows]
-        trade_results = execute_batch(cfg, store, pairs) if pairs else []
-        report = reconcile(cfg, store, settle_paper=True)
+            pairs = [(store.opportunity_from_row(r), int(r["id"])) for r in rows]
+            trade_results = execute_batch(cfg, store, pairs) if pairs else []
+
+        report = reconcile(cfg, store, settle_paper=False)
         self.status.loops += 1
         self.status.last_loop_at = _now()
-        filled = sum(1 for t in trade_results if t.status == "paper_filled")
+        filled = sum(1 for t in trade_results if t.status in {"paper_filled", "live_filled"})
         return {
             "scanned": result.scanned,
             "verified": len(result.verified_hits),
             "traded": filled,
-            "gamma_fallback": gamma_fallback,
+            "executed": execute_enabled,
+            "safety_mode": cfg.safety_mode.value,
             "realized_pnl": report.realized_pnl_sum,
+            "unresolved": report.unresolved,
         }
 
     def tick_reconcile(self) -> dict[str, Any]:
         cfg = self._reload_config()
         store = OpportunityStore(cfg.state_db)
-        report = reconcile(cfg, store, settle_paper=True)
+        report = reconcile(cfg, store, settle_paper=False)
         self.status.last_reconcile_at = _now()
         return report.to_dict()
 

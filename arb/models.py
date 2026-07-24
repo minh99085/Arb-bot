@@ -40,6 +40,10 @@ class RiskRejectReason(str, Enum):
 
     KILL_SWITCH = "kill_switch"
     STUDY_MODE = "study_mode"
+    SCAN_ONLY = "scan_only"
+    SHADOW = "shadow"
+    PAPER_EXECUTION_DISABLED = "paper_execution_disabled"
+    UNSUPPORTED_STRATEGY = "unsupported_strategy"
     BELOW_MIN_EDGE = "below_min_edge"
     MAX_POSITION = "max_position"
     MAX_OPEN = "max_open"
@@ -59,3 +63,23 @@ class ExecMode(str, Enum):
     PAPER = "paper"
     LIVE = "live"
     DISABLED = "disabled"
+
+
+class SafetyMode(str, Enum):
+    """Master execution-safety switch — scanner/shadow-first.
+
+    Governs whether the bot may create simulated or real orders/fills at all,
+    independent of the lower-level ``ExecMode`` (paper vs live mechanics):
+
+    - ``SCAN_ONLY``  — scan, verify, and log only. No orders, no fills. (default)
+    - ``SHADOW``     — record observations (shadow candidates) but no orders/fills.
+    - ``PAPER_EXECUTION`` — simulated order/fill creation, but ONLY when the
+      explicit ``ARB_PAPER_EXECUTION_ENABLED`` gate is also true.
+    - ``LIVE``       — real orders, still behind every live gate (allow_live,
+      dry_run off, kill switch off, private key, study off).
+    """
+
+    SCAN_ONLY = "scan_only"
+    SHADOW = "shadow"
+    PAPER_EXECUTION = "paper_execution"
+    LIVE = "live"

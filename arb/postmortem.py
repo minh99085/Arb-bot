@@ -58,21 +58,24 @@ class PostmortemReport:
 def _reject_breakdown(labeled) -> dict[str, int]:
     out: dict[str, int] = {}
     for row in labeled:
-        if row.label in {Label.FALSE_POSITIVE, Label.WS_EVAPORATED, Label.RISK_REJECTED}:
+        if row.label in {Label.FALSE_POSITIVE, Label.WS_EVAPORATED, Label.REJECTED}:
             key = row.reject_reason or row.label_detail or row.label.value
             out[key] = out.get(key, 0) + 1
     return dict(sorted(out.items(), key=lambda x: -x[1]))
 
 
 def _build_proposals(config: ArbConfig, labeled, counts: dict[str, int]) -> list:
-    """Deterministic proposal rules — no LLM. Conservative."""
+    """Deterministic proposal rules — no LLM. Conservative.
+
+    Scanner-quality only: never keys off realized/paper PnL, and legacy
+    synthetic results are excluded from every signal.
+    """
     proposals = []
     total = max(1, len(labeled))
     fp = counts.get(Label.FALSE_POSITIVE.value, 0)
     ws_evap = counts.get(Label.WS_EVAPORATED.value, 0)
-    wins = counts.get(Label.PAPER_WIN.value, 0)
-    losses = counts.get(Label.PAPER_LOSS.value, 0)
-    true_arb = counts.get(Label.TRUE_ARB.value, 0) + wins
+    # Genuine (non-synthetic) verified observations: shadow + unresolved.
+    true_arb = counts.get(Label.SHADOW.value, 0) + counts.get(Label.UNRESOLVED.value, 0)
 
     fp_rate = fp / total
     if fp_rate >= 0.5 and total >= 10:
@@ -107,24 +110,12 @@ def _build_proposals(config: ArbConfig, labeled, counts: dict[str, int]) -> list
                 )
             )
 
-    if losses > wins and (wins + losses) >= 5:
-        new_size = max(5.0, round(config.max_position_usd * 0.5, 2))
-        if new_size < config.max_position_usd:
-            proposals.append(
-                new_proposal(
-                    key="ARB_MAX_POSITION_USD",
-                    current_value=config.max_position_usd,
-                    proposed_value=new_size,
-                    rationale=(
-                        f"Paper losses ({losses}) exceed wins ({wins}); "
-                        f"halve position size until edge quality improves."
-                    ),
-                    evidence={"paper_wins": wins, "paper_losses": losses},
-                )
-            )
+    # Position-size / activity tuning based on realized-PnL streaks is removed:
+    # there is no verified settlement model, so those "wins/losses" were
+    # synthetic. Sizing stays a human decision until a real settlement phase.
 
     # If almost no verified hits, suggest lowering edge slightly — still human-gated
-    verified_like = true_arb + counts.get(Label.TRUE_ARB.value, 0)
+    verified_like = true_arb
     if total >= 20 and verified_like == 0 and config.min_edge_bps > 25:
         proposals.append(
             new_proposal(
@@ -155,11 +146,13 @@ def run_postmortem(
     total = len(labeled)
     fp = counts.get(Label.FALSE_POSITIVE.value, 0)
     ws_evap = counts.get(Label.WS_EVAPORATED.value, 0)
-    paper_pnl = sum(r.realized_pnl or 0.0 for r in labeled if r.realized_pnl is not None)
+    # No settlement model yet: realized PnL is never trusted here. Legacy
+    # synthetic records are excluded, so paper_pnl is 0 in this phase.
+    paper_pnl = 0.0
     verified = sum(
         1
         for r in labeled
-        if r.label in {Label.TRUE_ARB, Label.PAPER_WIN, Label.PAPER_LOSS}
+        if r.label in {Label.SHADOW, Label.UNRESOLVED}
     )
 
     dataset_path = config.state_root / "datasets" / f"labels_{days}d.jsonl"

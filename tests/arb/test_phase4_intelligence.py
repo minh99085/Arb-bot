@@ -45,7 +45,8 @@ def test_label_false_positive_and_ws(tmp_path: Path):
     assert counts.get(Label.WS_EVAPORATED.value, 0) >= 1
 
 
-def test_label_paper_win(tmp_path: Path):
+def test_label_legacy_synthetic_not_a_win(tmp_path: Path):
+    """A fill carrying realized_pnl (old auto-settle) labels LEGACY_SYNTHETIC — never a win."""
     cfg = ArbConfig(
         state_dir=tmp_path,
         study_mode=False,
@@ -69,7 +70,27 @@ def test_label_paper_win(tmp_path: Path):
     )
     store.transition(oid, OppState.CLOSED, reason="done")
     labeled = label_history(store, days=30)
-    assert any(r.label == Label.PAPER_WIN for r in labeled)
+    assert any(r.label == Label.LEGACY_SYNTHETIC for r in labeled)
+    # The misleading "win" label no longer exists in the vocabulary.
+    assert not hasattr(Label, "PAPER_WIN")
+
+
+def test_open_candidate_is_not_true_arb_or_win(tmp_path: Path):
+    """Candidate / CLOB-verified / order-posted records are honest, never wins."""
+    store = OpportunityStore(tmp_path / "db.sqlite")
+    store.save(_opp("0xgamma"), state=OppState.GAMMA_FLAG, verified=False)
+    store.save(_opp("0xverif"), state=OppState.CLOB_VERIFIED, verified=True)
+    oid = store.save(_opp("0xorder"), state=OppState.CLOB_VERIFIED, verified=True)
+    store.transition(oid, OppState.ORDER_PLACED, reason="order")
+    labeled = label_history(store, days=30)
+    by_cid = {r.condition_id: r.label for r in labeled}
+    assert by_cid["0xgamma"] == Label.CANDIDATE
+    assert by_cid["0xverif"] == Label.SHADOW
+    assert by_cid["0xorder"] == Label.UNRESOLVED
+    # None of the honest labels claim a win / realized arb.
+    assert all(
+        r.label in {Label.CANDIDATE, Label.SHADOW, Label.UNRESOLVED} for r in labeled
+    )
 
 
 def test_proposal_human_gate(tmp_path: Path):

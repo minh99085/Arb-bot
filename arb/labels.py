@@ -14,15 +14,22 @@ from arb.state import OpportunityStore
 
 
 class Label(str, Enum):
-    """Outcome labels for learning — evidence-based, not vibes."""
+    """Honest outcome labels — no label may claim a win or a realized arb.
 
-    TRUE_ARB = "true_arb"  # reached FILLED/SETTLED/CLOSED with positive expected edge
-    FALSE_POSITIVE = "false_positive"  # gamma/clob flag that evaporated or risk-rejected
-    MISSED_THRESHOLD = "missed_threshold"  # near-miss below min edge (optional future)
+    A candidate, CLOB-verified, risk-approved, order-posted, or merely
+    expected-positive record is NOT a win and NOT a realized arbitrage. Those
+    map to CANDIDATE / SHADOW / UNRESOLVED. Money-claiming labels do not exist
+    in this phase because there is no verified settlement model yet.
+    """
+
+    CANDIDATE = "candidate"  # detected but unverified (gamma flag)
+    SHADOW = "shadow"  # CLOB-verified observation, not executed
+    UNRESOLVED = "unresolved"  # entered execution pipeline; outcome not settled
+    PARTIAL = "partial"  # partial fill — not a complete, settled bundle
+    REJECTED = "rejected"  # risk/verify/unsupported rejection
+    FALSE_POSITIVE = "false_positive"  # gamma/clob flag that evaporated
     WS_EVAPORATED = "ws_evaporated"  # died on WS re-verify
-    RISK_REJECTED = "risk_rejected"
-    PAPER_WIN = "paper_win"
-    PAPER_LOSS = "paper_loss"
+    LEGACY_SYNTHETIC = "legacy_synthetic"  # old auto-settled synthetic record
     UNKNOWN = "unknown"
 
 
@@ -49,47 +56,50 @@ class LabeledRow:
         return data
 
 
+def is_legacy_synthetic(fill: dict | None) -> bool:
+    """A fill carrying a realized_pnl is a legacy synthetic record.
+
+    The removed instant-settle reconcile path is the only thing that ever wrote
+    realized_pnl onto a (paper) fill. Going forward paper fills stay unresolved,
+    so any realized_pnl present marks a pre-safety-phase synthetic record.
+    """
+    return bool(fill is not None and fill.get("realized_pnl") is not None)
+
+
 def _classify(row: dict, fill: dict | None) -> tuple[Label, str]:
     state = row.get("state") or ""
     reason = (row.get("reject_reason") or "") or ""
 
+    # Legacy synthetic records (old auto-settled paper fills) are never a win.
+    if is_legacy_synthetic(fill):
+        return Label.LEGACY_SYNTHETIC, f"legacy_realized={fill.get('realized_pnl')}"
+
     if state == OppState.REJECTED.value:
         if reason.startswith("ws_reverify"):
             return Label.WS_EVAPORATED, reason
-        if reason in {
-            "kill_switch",
-            "study_mode",
-            "max_open",
-            "max_position",
-            "daily_loss",
-            "daily_trades",
-            "duplicate_open",
-            "insufficient_depth",
-            "category_blocked",
-            "below_min_edge",
-        } or reason.startswith("risk"):
-            return Label.RISK_REJECTED, reason or "risk"
         if reason in {"edge_evaporated", "illiquid", "missing_bid_ask", "no_book"}:
             return Label.FALSE_POSITIVE, reason
-        return Label.FALSE_POSITIVE, reason or "rejected"
+        # risk / unsupported-strategy / scan-only / other rejections
+        return Label.REJECTED, reason or "rejected"
 
-    if state in {OppState.FILLED.value, OppState.SETTLED.value, OppState.CLOSED.value}:
-        if fill is not None:
-            realized = fill.get("realized_pnl")
-            expected = fill.get("expected_pnl")
-            if realized is not None:
-                if float(realized) >= 0:
-                    return Label.PAPER_WIN, f"realized={realized}"
-                return Label.PAPER_LOSS, f"realized={realized}"
-            if expected is not None and float(expected) > 0:
-                return Label.TRUE_ARB, f"expected={expected}"
-        return Label.TRUE_ARB, state
+    # Reached the execution pipeline but there is no settlement model: an open
+    # or "filled" paper/live position is UNRESOLVED, never a win/true arb.
+    if state in {
+        OppState.RISK_OK.value,
+        OppState.ORDER_PLACED.value,
+        OppState.FILLED.value,
+        OppState.SETTLED.value,
+        OppState.CLOSED.value,
+    }:
+        return Label.UNRESOLVED, f"open:{state}"
 
-    if state in {OppState.CLOB_VERIFIED.value, OppState.RISK_OK.value, OppState.ORDER_PLACED.value}:
-        return Label.TRUE_ARB, f"open:{state}"
+    # CLOB-verified is a shadow observation — verified, but not executed.
+    if state == OppState.CLOB_VERIFIED.value:
+        return Label.SHADOW, "clob_verified"
 
+    # Gamma flag is an unverified candidate.
     if state == OppState.GAMMA_FLAG.value:
-        return Label.FALSE_POSITIVE, "gamma_only_unverified"
+        return Label.CANDIDATE, "gamma_only_unverified"
 
     return Label.UNKNOWN, state or "unknown"
 

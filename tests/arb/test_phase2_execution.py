@@ -5,7 +5,7 @@ from pathlib import Path
 from arb.config import ArbConfig
 from arb.dutch_book import ArbKind, Opportunity
 from arb.execute import execute_opportunity
-from arb.models import ExecMode, OppState, RiskRejectReason
+from arb.models import ExecMode, OppState, RiskRejectReason, SafetyMode
 from arb.paper import simulate_paper_fill
 from arb.reconcile import reconcile
 from arb.risk import check_risk
@@ -29,8 +29,11 @@ def _opp(edge_bps: float = 200.0, condition_id: str = "0xabc") -> Opportunity:
 
 
 def _cfg(tmp_path: Path, **kwargs) -> ArbConfig:
+    # Opt in to paper execution explicitly — scanner/shadow-first defaults do not.
     base = dict(
         state_dir=tmp_path,
+        safety_mode=SafetyMode.PAPER_EXECUTION,
+        paper_execution_enabled=True,
         study_mode=False,
         dry_run=True,
         exec_mode=ExecMode.PAPER,
@@ -78,7 +81,8 @@ def test_paper_fill_buy_bundle():
     assert fill.expected_pnl == round(0.15 * 10.0, 6)
 
 
-def test_execute_paper_and_reconcile(tmp_path: Path):
+def test_execute_paper_and_reconcile_leaves_unresolved(tmp_path: Path):
+    """Paper fills are recorded but NEVER synthetically realized/closed."""
     cfg = _cfg(tmp_path)
     store = OpportunityStore(cfg.state_db)
     opp_id = store.save(_opp(), state=OppState.CLOB_VERIFIED, verified=True, ask_depth=50, bid_depth=50)
@@ -89,11 +93,19 @@ def test_execute_paper_and_reconcile(tmp_path: Path):
     assert store.get(opp_id)["state"] == OppState.FILLED.value
     assert store.count_fills_today() == 1
 
+    # The recorded fill must carry expected PnL but NO realized PnL.
+    fill = store.list_fills()[0]
+    assert fill["expected_pnl"] is not None
+    assert fill["realized_pnl"] is None
+
+    # reconcile must not settle, not realize, and not close the position.
     report = reconcile(cfg, store, settle_paper=True)
-    assert report.settled == 1
-    assert report.realized_pnl_sum > 0
-    assert store.get(opp_id)["state"] == OppState.CLOSED.value
-    assert store.count_open() == 0
+    assert report.settled == 0
+    assert report.unresolved == 1
+    assert report.realized_pnl_sum == 0.0
+    assert report.expected_pnl_sum > 0
+    assert store.get(opp_id)["state"] == OppState.FILLED.value
+    assert store.count_open() == 1
 
 
 def test_realistic_paper_rejects_gamma_source(tmp_path: Path):

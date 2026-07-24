@@ -184,25 +184,25 @@ def collect_metrics(config: ArbConfig, store: OpportunityStore, *, days: int = 3
     total = max(1, len(labeled))
     fp = counts.get(Label.FALSE_POSITIVE.value, 0)
     ws_evap = counts.get(Label.WS_EVAPORATED.value, 0)
-    wins = counts.get(Label.PAPER_WIN.value, 0)
-    losses = counts.get(Label.PAPER_LOSS.value, 0)
-    true_arb = counts.get(Label.TRUE_ARB.value, 0)
-    verified_like = true_arb + wins + losses
+    shadow = counts.get(Label.SHADOW.value, 0)
+    unresolved = counts.get(Label.UNRESOLVED.value, 0)
+    candidates = counts.get(Label.CANDIDATE.value, 0)
+    legacy = counts.get(Label.LEGACY_SYNTHETIC.value, 0)
+    # Realized win/loss outcomes are NOT modeled in this phase, and legacy
+    # synthetic results are deliberately excluded from tuning. "verified_like"
+    # counts only genuine observations (verified shadow + unresolved positions).
+    verified_like = shadow + unresolved
     summary = store.trade_summary()
     return {
         "days": days,
         "labeled": len(labeled),
         "false_positive_rate": round(fp / total, 4),
         "ws_evaporation_rate": round(ws_evap / total, 4),
-        "paper_wins": wins,
-        "paper_losses": losses,
         "verified_like": verified_like,
-        "gamma_flags": counts.get(Label.FALSE_POSITIVE.value, 0)
-        + counts.get(Label.TRUE_ARB.value, 0)
-        + counts.get(Label.WS_EVAPORATED.value, 0),
-        "fill_count": summary["fill_count"],
-        "realized_pnl_sum": summary["realized_pnl_sum"],
-        "realized_pnl_today": summary["realized_pnl_today"],
+        "shadow": shadow,
+        "unresolved": unresolved,
+        "candidates": candidates,
+        "legacy_synthetic": legacy,
         "open_positions": summary["open_positions"],
         "label_counts": counts,
     }
@@ -213,36 +213,35 @@ def propose_adjustments(
     metrics: dict[str, Any],
     overrides: dict[str, float],
 ) -> list[TuneChange]:
-    """Deterministic learning rules — aggressive when quiet, defensive when losing."""
+    """Deterministic scanner-quality tuning only.
+
+    Tuning is driven strictly by scanner precision signals (false-positive rate,
+    WS evaporation, absence of verified signals). It never adjusts position size,
+    open-position/daily-trade caps, or per-loop trade activity, and it never
+    keys off realized/paper PnL — those synthetic outcomes are not trustworthy
+    and are explicitly excluded (see PHASE1 safety refactor).
+    """
     changes: list[TuneChange] = []
     labeled = int(metrics.get("labeled") or 0)
     fp_rate = float(metrics.get("false_positive_rate") or 0)
     ws_rate = float(metrics.get("ws_evaporation_rate") or 0)
-    wins = int(metrics.get("paper_wins") or 0)
-    losses = int(metrics.get("paper_losses") or 0)
     verified_like = int(metrics.get("verified_like") or 0)
-    fills = int(metrics.get("fill_count") or 0)
-    pnl = float(metrics.get("realized_pnl_sum") or 0)
 
     edge = _current_value(config, "ARB_MIN_EDGE_BPS", overrides)
     verify_n = _current_value(config, "ARB_VERIFY_TOP_N", overrides)
-    size = _current_value(config, "ARB_MAX_POSITION_USD", overrides)
-    open_n = _current_value(config, "ARB_MAX_OPEN_POSITIONS", overrides)
-    daily = _current_value(config, "ARB_MAX_DAILY_TRADES", overrides)
     depth = _current_value(config, "ARB_MIN_BOOK_DEPTH", overrides)
     watch = _current_value(config, "ARB_WS_WATCH_SEC", overrides)
-    trade_lim = _current_value(config, "ARB_WORKER_TRADE_LIMIT", overrides)
 
-    # --- Explore when quiet: loosen to find more alpha ---
-    if labeled >= 5 and verified_like == 0 and fills < 3:
+    # --- Explore when quiet: widen the SCANNER's net (never execution activity) ---
+    if labeled >= 5 and verified_like == 0:
         _adjust(
             changes,
             overrides,
             config,
             key="ARB_MIN_EDGE_BPS",
             new_value=max(15.0, edge - 5.0),
-            rationale="No verified/paper signals — lower edge to explore more markets",
-            evidence={"verified_like": verified_like, "fills": fills},
+            rationale="No verified/shadow signals — lower edge to explore more markets",
+            evidence={"verified_like": verified_like, "labeled": labeled},
         )
         _adjust(
             changes,
@@ -261,15 +260,6 @@ def propose_adjustments(
             new_value=max(1.0, depth - 0.5),
             rationale="Quiet book — allow thinner books for discovery",
             evidence={"min_book_depth": depth},
-        )
-        _adjust(
-            changes,
-            overrides,
-            config,
-            key="ARB_WORKER_TRADE_LIMIT",
-            new_value=min(30.0, trade_lim + 3.0),
-            rationale="Increase per-loop trade attempts while exploring",
-            evidence={"trade_limit": trade_lim},
         )
 
     # --- High false positives: tighten edge ---
@@ -294,87 +284,6 @@ def propose_adjustments(
             new_value=min(120.0, watch + 10.0),
             rationale=f"WS evaporate {ws_rate:.0%} — watch longer before trade",
             evidence={"ws_evaporation_rate": ws_rate},
-        )
-
-    # --- Winning streak: scale activity ---
-    if (wins + losses) >= 5 and wins > losses and pnl >= 0:
-        _adjust(
-            changes,
-            overrides,
-            config,
-            key="ARB_MAX_OPEN_POSITIONS",
-            new_value=min(40.0, open_n + 2.0),
-            rationale=f"Winning ({wins}/{wins+losses}) — allow more concurrent positions",
-            evidence={"wins": wins, "losses": losses, "pnl": pnl},
-        )
-        _adjust(
-            changes,
-            overrides,
-            config,
-            key="ARB_MAX_DAILY_TRADES",
-            new_value=min(300.0, daily + 10.0),
-            rationale="Winning — raise daily trade cap",
-            evidence={"wins": wins, "losses": losses},
-        )
-        _adjust(
-            changes,
-            overrides,
-            config,
-            key="ARB_MAX_POSITION_USD",
-            new_value=min(100.0, round(size * 1.1, 2)),
-            rationale="Winning — nudge size up 10%",
-            evidence={"size": size, "pnl": pnl},
-        )
-        _adjust(
-            changes,
-            overrides,
-            config,
-            key="ARB_MIN_EDGE_BPS",
-            new_value=max(15.0, edge - 2.0),
-            rationale="Winning — slightly ease edge to capture more flow",
-            evidence={"edge": edge},
-        )
-
-    # --- Losing streak: defend ---
-    if (wins + losses) >= 5 and losses > wins:
-        _adjust(
-            changes,
-            overrides,
-            config,
-            key="ARB_MAX_POSITION_USD",
-            new_value=max(5.0, round(size * 0.75, 2)),
-            rationale=f"Losing ({losses}/{wins+losses}) — cut size 25%",
-            evidence={"wins": wins, "losses": losses, "pnl": pnl},
-        )
-        _adjust(
-            changes,
-            overrides,
-            config,
-            key="ARB_MIN_EDGE_BPS",
-            new_value=min(150.0, edge + 5.0),
-            rationale="Losing — demand more edge",
-            evidence={"edge": edge},
-        )
-        _adjust(
-            changes,
-            overrides,
-            config,
-            key="ARB_MAX_OPEN_POSITIONS",
-            new_value=max(3.0, open_n - 2.0),
-            rationale="Losing — reduce concurrent risk",
-            evidence={"open_n": open_n},
-        )
-
-    # --- Many fills but flat PnL: keep exploring lightly ---
-    if fills >= 10 and abs(pnl) < 0.05 and verified_like >= 3:
-        _adjust(
-            changes,
-            overrides,
-            config,
-            key="ARB_VERIFY_TOP_N",
-            new_value=min(200.0, verify_n + 10.0),
-            rationale="Active but flat PnL — broaden CLOB verify set",
-            evidence={"fills": fills, "pnl": pnl},
         )
 
     return changes
@@ -434,7 +343,7 @@ def run_self_tune(
     force: bool = False,
 ) -> SelfTuneReport:
     """Observe labels/fills → adjust overrides within bounds → persist."""
-    enabled = os.environ.get("ARB_SELF_TUNE", "true").lower() not in {"0", "false", "no"}
+    enabled = os.environ.get("ARB_SELF_TUNE", "false").lower() not in {"0", "false", "no"}
     if not enabled and not force:
         return SelfTuneReport(enabled=False, notes=["ARB_SELF_TUNE disabled"])
 
@@ -491,8 +400,15 @@ def run_self_tune(
 
 
 def apply_overrides_to_config(config: ArbConfig) -> ArbConfig:
-    """Return config with self_tune.json overrides merged in."""
+    """Return config with self_tune.json overrides merged in.
+
+    When self-tune is disabled, historical overrides are neither loaded nor
+    applied — the on-disk self_tune.json is preserved for audit but ignored.
+    """
     from dataclasses import replace
+
+    if not config.self_tune:
+        return config
 
     overrides = load_overrides(config)
     if not overrides:
@@ -528,7 +444,7 @@ def status_dict(config: ArbConfig) -> dict[str, Any]:
             except json.JSONDecodeError:
                 continue
     return {
-        "enabled": os.environ.get("ARB_SELF_TUNE", "true").lower() not in {"0", "false", "no"},
+        "enabled": os.environ.get("ARB_SELF_TUNE", "false").lower() not in {"0", "false", "no"},
         "path": str(path),
         "overrides": overrides,
         "bounds": {k: {"min": lo, "max": hi} for k, (lo, hi) in BOUNDS.items()},

@@ -6,12 +6,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from arb.config import ArbConfig
-from arb.dutch_book import Opportunity
-from arb.models import ExecMode, OppState, RiskRejectReason
+from arb.dutch_book import ArbKind, Opportunity
+from arb.models import ExecMode, OppState, RiskRejectReason, SafetyMode
 from arb.paper import PaperFill, simulate_paper_fill
 from arb.risk import RiskDecision, check_risk
 from arb.scanner import VerifyOutcome, verify_one
 from arb.state import OpportunityStore
+
+# Live-leg statuses that represent a confirmed match/fill (not a mere ack).
+_MATCHED_STATUSES = {"matched", "filled"}
 
 
 @dataclass
@@ -30,6 +33,32 @@ def refresh_opportunity_from_clob(config: ArbConfig, opp: Opportunity) -> Verify
     return verify_one(config, opp)
 
 
+def _bundle_fill_state(live: Any) -> str:
+    """Classify a live bundle result: 'filled' | 'partial' | 'posted'.
+
+    A bundle is only 'filled' when every leg is a confirmed match AND all legs
+    share the same (positive) share quantity — i.e. a genuine complete set. A
+    mere order acknowledgement (resting/posted), a failed/errored leg, or
+    unequal leg quantities is NOT a filled bundle.
+    """
+    legs = [leg for leg in (live.legs or []) if getattr(leg, "token_id", "")]
+    if not legs:
+        return "posted"
+    matched = [
+        leg
+        for leg in legs
+        if (getattr(leg, "status", "") or "").lower() in _MATCHED_STATUSES
+        and not getattr(leg, "error", None)
+    ]
+    if len(matched) != len(legs):
+        return "partial" if matched else "posted"
+    sizes = [round(float(getattr(leg, "size", 0.0) or 0.0), 4) for leg in legs]
+    if sizes[0] <= 0 or len(set(sizes)) != 1:
+        # Unequal (or zero) leg quantities are not a complete, settleable set.
+        return "partial"
+    return "filled"
+
+
 def execute_opportunity(
     config: ArbConfig,
     store: OpportunityStore,
@@ -45,6 +74,52 @@ def execute_opportunity(
     Default is paper. Live requires ARB_ALLOW_LIVE + key + exec_mode=live + gates.
     Realistic paper re-verifies on live CLOB books at execution time.
     """
+    # --- Sell bundles are not executable yet ---------------------------------
+    # No verified collateral-split / inventory / common-quantity / reconciliation
+    # workflow exists. It stays a detected research signal, but execution is a
+    # clear UNSUPPORTED_STRATEGY rejection (no state mutation, no order).
+    if opp.kind == ArbKind.SELL_BUNDLE:
+        return TradeResult(
+            opportunity=opp,
+            status="unsupported_strategy",
+            detail=(
+                "SELL_BUNDLE execution disabled (UNSUPPORTED_STRATEGY): no verified "
+                "inventory/collateral-split/common-quantity workflow yet — research "
+                "signal only until a later phase implements it."
+            ),
+            opportunity_id=opportunity_id,
+        )
+
+    # --- Execution safety gate ------------------------------------------------
+    # SCAN_ONLY / SHADOW never create orders or fills, and PAPER_EXECUTION needs
+    # the explicit ARB_PAPER_EXECUTION_ENABLED gate. Blocked opportunities keep
+    # their current state (they remain shadow/candidate records — not rejected)
+    # and no network calls are made.
+    if config.safety_mode == SafetyMode.SCAN_ONLY:
+        return TradeResult(
+            opportunity=opp,
+            status="scan_only",
+            detail="SCAN_ONLY safety mode — scan/verify/log only, no order or fill.",
+            opportunity_id=opportunity_id,
+        )
+    if config.safety_mode == SafetyMode.SHADOW:
+        return TradeResult(
+            opportunity=opp,
+            status="shadow",
+            detail="SHADOW safety mode — observation recorded, no order or fill.",
+            opportunity_id=opportunity_id,
+        )
+    if config.safety_mode == SafetyMode.PAPER_EXECUTION and not config.paper_execution_enabled:
+        return TradeResult(
+            opportunity=opp,
+            status="paper_execution_disabled",
+            detail=(
+                "PAPER_EXECUTION requires the explicit ARB_PAPER_EXECUTION_ENABLED=true "
+                "gate — simulated fills are disabled."
+            ),
+            opportunity_id=opportunity_id,
+        )
+
     row = store.get(opportunity_id) if opportunity_id is not None else None
 
     if config.paper_realistic and config.exec_mode == ExecMode.PAPER:
@@ -171,7 +246,25 @@ def execute_opportunity(
                 live=live,
             )
 
+        # An order acknowledgement is NOT a fill. Only a confirmed complete set
+        # (every leg matched, equal share quantities) becomes FILLED. Anything
+        # else stays ORDER_PLACED with no fill row and no realized PnL.
+        fill_state = _bundle_fill_state(live)
+        if fill_state != "filled":
+            return TradeResult(
+                opportunity=opp,
+                status="order_posted" if fill_state == "posted" else "live_partial",
+                detail=(
+                    f"live orders {fill_state}: {len(live.order_ids)} leg(s) acknowledged "
+                    "but not a confirmed complete-set fill — no FILLED state, no PnL"
+                ),
+                opportunity_id=opp_id,
+                risk=risk,
+                live=live,
+            )
+
         expected_pnl = round(opp.edge * risk.size_usd, 6)
+        # realized_pnl stays None: a fill is not a settlement.
         fill_id = store.record_fill(
             opportunity_id=opp_id,
             mode="live",
@@ -189,7 +282,7 @@ def execute_opportunity(
             status="live_filled",
             detail=(
                 f"live size=${risk.size_usd:.2f} orders={len(live.order_ids)} "
-                f"fill_total={live.fill_total:.4f} expected_pnl=${expected_pnl:.4f}"
+                f"fill_total={live.fill_total:.4f} expected_pnl=${expected_pnl:.4f} (UNRESOLVED)"
             ),
             opportunity_id=opp_id,
             risk=risk,

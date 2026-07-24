@@ -8,10 +8,28 @@ import sys
 
 from arb.config import ArbConfig
 from arb.execute import execute_batch
-from arb.models import ExecMode, OppState
+from arb.models import OppState
 from arb.reconcile import reconcile
 from arb.scanner import format_alert, run_scan
 from arb.state import OpportunityStore
+
+
+def _execution_disabled_help(config: ArbConfig) -> str:
+    """Explain why execution is off and how to opt in (scanner/shadow-first)."""
+    return (
+        "Execution is disabled — scanner/shadow-first defaults are in effect.\n"
+        f"  safety_mode={config.safety_mode.value} "
+        f"paper_execution_enabled={config.paper_execution_enabled} "
+        f"study_mode={config.study_mode} kill_switch={config.kill_switch}\n"
+        "\n"
+        "To PAPER-execute (simulated fills), set ALL of:\n"
+        "  ARB_SAFETY_MODE=paper_execution\n"
+        "  ARB_PAPER_EXECUTION_ENABLED=true\n"
+        "  ARB_STUDY_MODE=false\n"
+        "\n"
+        "LIVE additionally requires: ARB_SAFETY_MODE=live ARB_ALLOW_LIVE=true "
+        "ARB_EXEC_MODE=live ARB_DRY_RUN=false ARB_KILL_SWITCH=false + POLYMARKET_PRIVATE_KEY."
+    )
 
 
 def _print_opportunity(opp, prefix: str = "", *, position_usd: float = 25.0) -> None:
@@ -199,6 +217,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
+                    "safety_mode": config.safety_mode.value,
+                    "paper_execution_enabled": config.paper_execution_enabled,
+                    "study_mode": config.study_mode,
+                    "self_tune": config.self_tune,
+                    "execution_allowed": config.execution_allowed(),
+                    "live_allowed": config.live_allowed(),
                     "count": store.count(state=state),
                     "by_state": {s.value: store.count(state=s) for s in states},
                     "open_positions": store.count_open(),
@@ -212,9 +236,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
         return 0
 
-    print(f"Study mode: {config.study_mode}  exec_mode={config.exec_mode.value}")
+    print(f"Safety mode: {config.safety_mode.value}  exec_mode={config.exec_mode.value}")
+    print(
+        f"Paper execution enabled: {config.paper_execution_enabled}  "
+        f"study_mode={config.study_mode}"
+    )
     print(f"Kill switch: {config.kill_switch}  dry_run={config.dry_run}")
-    print(f"Live allowed: {config.live_allowed()}")
+    print(f"Self-tune: {config.self_tune}")
+    print(f"Execution allowed: {config.execution_allowed()}  (live={config.live_allowed()})")
     print(f"State DB: {config.state_db}")
     print(f"Ledger:   {config.ledger_path}")
     print()
@@ -262,24 +291,20 @@ def cmd_study(args: argparse.Namespace) -> int:
     print(f"Verified in window: {gate['verified_hits_in_window']}")
     print(f"Ready for Phase 2:  {'YES' if ready else 'NO — keep collecting study data'}")
     print()
-    print("Override: set ARB_STUDY_MODE=false to enable paper execution anyway.")
+    print(
+        "Scanner/shadow-first: paper execution stays OFF until you explicitly set "
+        "ARB_SAFETY_MODE=paper_execution + ARB_PAPER_EXECUTION_ENABLED=true "
+        "+ ARB_STUDY_MODE=false."
+    )
     return 0
 
 
 def cmd_trade(args: argparse.Namespace) -> int:
-    """Paper (default) or live-gated execution of CLOB-verified opportunities."""
+    """Execute CLOB-verified opportunities — only when execution is explicitly enabled."""
     config = ArbConfig.from_env()
-    if args.paper:
-        config = config.with_overrides(exec_mode=ExecMode.PAPER, study_mode=False)
-    if args.force_study_off:
-        config = config.with_overrides(study_mode=False)
 
-    if config.study_mode and not args.force_study_off and not args.paper:
-        print(
-            "Study mode is on — trading blocked.\n"
-            "Use: python -m arb trade --paper   (sets study_mode off for paper)\n"
-            "Or:  ARB_STUDY_MODE=false python -m arb trade"
-        )
+    if not config.execution_allowed():
+        print(_execution_disabled_help(config))
         return 1
 
     store = OpportunityStore(config.state_db)
@@ -312,6 +337,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     print("Reconcile report")
     print(f"  Fills:          {report.fills}")
     print(f"  Settled now:    {report.settled}")
+    print(f"  Unresolved:     {report.unresolved}")
     print(f"  Open positions: {report.open_positions}")
     print(f"  Expected PnL:   ${report.expected_pnl_sum:.4f}")
     print(f"  Realized PnL:   ${report.realized_pnl_sum:.4f}")
@@ -322,16 +348,15 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
 
 
 def cmd_loop(args: argparse.Namespace) -> int:
-    """One full money-loop turn: scan → [ws reverify] → paper trade → reconcile."""
-    config = ArbConfig.from_env().with_overrides(
-        max_markets=args.limit,
-        study_mode=False if args.paper else None,
-        exec_mode=ExecMode.PAPER if args.paper else None,
-    )
-    if config.study_mode and not args.paper:
-        print("Loop requires paper mode or ARB_STUDY_MODE=false")
-        print("Use: python -m arb loop --paper --limit 50")
-        return 1
+    """One loop turn: scan → [ws reverify] → [execute if enabled] → reconcile.
+
+    Scanner mode is never overridden. Orders/fills are created only when the
+    safety mode explicitly permits execution; otherwise the loop is scan/shadow.
+    """
+    config = ArbConfig.from_env().with_overrides(max_markets=args.limit)
+    execute_enabled = config.execution_allowed()
+    if not execute_enabled:
+        print("(execution disabled — scan/shadow-only loop)")
 
     print("=== LOOP: scan ===")
     result = run_scan(config, gamma_only=False, persist=True)
@@ -339,7 +364,7 @@ def cmd_loop(args: argparse.Namespace) -> int:
 
     store = OpportunityStore(config.state_db)
 
-    if args.ws and config.ws_enabled and result.verified_hits:
+    if execute_enabled and args.ws and config.ws_enabled and result.verified_hits:
         print("=== LOOP: ws reverify ===")
         from arb.reverify import reverify_opportunities
         from arb.ws_feed import run_feed_sync
@@ -366,22 +391,26 @@ def cmd_loop(args: argparse.Namespace) -> int:
             for r in store.recent(limit=args.trade_limit * 3, state=OppState.CLOB_VERIFIED)
             if r["condition_id"] in valid_ids
         ][: args.trade_limit]
-    else:
+    elif execute_enabled:
         rows = store.recent(limit=args.trade_limit, state=OppState.CLOB_VERIFIED)
-
-    pairs = [(store.opportunity_from_row(r), int(r["id"])) for r in rows]
+    else:
+        rows = []
 
     print("=== LOOP: trade ===")
-    if not pairs:
-        print("No verified opportunities to trade.")
+    if not execute_enabled:
+        print("Skipped — execution disabled (scan/shadow-only).")
     else:
-        for res in execute_batch(config, store, pairs):
-            print(f"{res.status}: {res.detail}")
+        pairs = [(store.opportunity_from_row(r), int(r["id"])) for r in rows]
+        if not pairs:
+            print("No verified opportunities to trade.")
+        else:
+            for res in execute_batch(config, store, pairs):
+                print(f"{res.status}: {res.detail}")
 
     print("=== LOOP: reconcile ===")
-    report = reconcile(config, store, settle_paper=True)
+    report = reconcile(config, store, settle_paper=False)
     print(
-        f"fills={report.fills} settled={report.settled} "
+        f"fills={report.fills} settled={report.settled} unresolved={report.unresolved} "
         f"realized=${report.realized_pnl_sum:.4f} gap=${report.pnl_gap:.4f}"
     )
     return 0
@@ -622,7 +651,11 @@ def cmd_worker(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="polymarket-arb",
-        description="Polymarket Dutch-book arb bot — Phases 1–5 (money loop + intelligence + worker).",
+        description=(
+            "Polymarket Dutch-book arb bot — scanner/shadow-first. Defaults: "
+            "SCAN_ONLY, no paper/live execution, self-tune off. Execution is "
+            "opt-in via ARB_SAFETY_MODE + ARB_PAPER_EXECUTION_ENABLED."
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -678,11 +711,20 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--json", action="store_true")
     study.set_defaults(func=cmd_study)
 
-    trade = sub.add_parser("trade", help="Paper/live execute CLOB-verified opps")
+    trade = sub.add_parser(
+        "trade",
+        help="Execute CLOB-verified opps (requires explicit ARB_SAFETY_MODE + gate)",
+    )
     trade.add_argument("--limit", type=int, default=5)
     trade.add_argument("--verified-only", action="store_true", default=True)
-    trade.add_argument("--paper", action="store_true", help="Force paper mode, exit study")
-    trade.add_argument("--force-study-off", action="store_true")
+    # Deprecated no-ops: execution is governed by ARB_SAFETY_MODE +
+    # ARB_PAPER_EXECUTION_ENABLED, never by a CLI flag flipping study mode.
+    trade.add_argument(
+        "--paper",
+        action="store_true",
+        help="(deprecated no-op) set ARB_SAFETY_MODE=paper_execution + ARB_PAPER_EXECUTION_ENABLED=true instead",
+    )
+    trade.add_argument("--force-study-off", action="store_true", help="(deprecated no-op)")
     trade.set_defaults(func=cmd_trade)
 
     rec = sub.add_parser("reconcile", help="Reconcile fills vs expected PnL")
@@ -690,8 +732,15 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--json", action="store_true")
     rec.set_defaults(func=cmd_reconcile)
 
-    loop = sub.add_parser("loop", help="One turn: scan → [ws] → trade → reconcile")
-    loop.add_argument("--paper", action="store_true", help="Paper execution loop")
+    loop = sub.add_parser(
+        "loop",
+        help="One turn: scan → [ws] → [execute if enabled] → reconcile",
+    )
+    loop.add_argument(
+        "--paper",
+        action="store_true",
+        help="(deprecated no-op) execution requires ARB_SAFETY_MODE=paper_execution + gate",
+    )
     loop.add_argument("--limit", type=int, default=50, help="Max markets to scan")
     loop.add_argument("--trade-limit", type=int, default=5)
     loop.add_argument("--ws", action="store_true", help="WS re-verify before trade")
@@ -742,7 +791,11 @@ def build_parser() -> argparse.ArgumentParser:
     worker_sub = worker.add_subparsers(dest="worker_command", required=True)
 
     w_run = worker_sub.add_parser("run", help="Run forever (daemon)")
-    w_run.add_argument("--paper", action="store_true", help="Force paper loop")
+    w_run.add_argument(
+        "--paper",
+        action="store_true",
+        help="(deprecated no-op) execution requires ARB_SAFETY_MODE=paper_execution + gate",
+    )
     w_run.add_argument("--ws", action="store_true", help="WS re-verify in loop ticks")
     w_run.add_argument("--scan-limit", type=int, default=None)
     w_run.set_defaults(func=cmd_worker)

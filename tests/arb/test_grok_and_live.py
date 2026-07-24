@@ -17,7 +17,7 @@ from arb.grok import (
     analyze_postmortem,
     apply_grok_proposals,
 )
-from arb.models import ExecMode, OppState
+from arb.models import ExecMode, OppState, SafetyMode
 from arb.postmortem import run_postmortem
 from arb.state import OpportunityStore
 
@@ -41,6 +41,7 @@ def _opp() -> Opportunity:
 def _cfg(tmp_path: Path, **kwargs) -> ArbConfig:
     base = dict(
         state_dir=tmp_path,
+        safety_mode=SafetyMode.LIVE,
         study_mode=False,
         dry_run=False,
         exec_mode=ExecMode.LIVE,
@@ -95,12 +96,13 @@ def test_execute_live_with_mocked_clob(tmp_path: Path, monkeypatch):
     store = OpportunityStore(cfg.state_db)
     oid = store.save(_opp(), state=OppState.CLOB_VERIFIED, verified=True)
 
+    # A genuine complete-set fill: every leg matched AND equal share quantities.
     fake = LiveBundleResult(
         ok=True,
         mode="live",
         legs=[
             LiveLegResult(token_id="tok_a", side="BUY", price=0.4, size=12.5, order_id="o1", status="matched"),
-            LiveLegResult(token_id="tok_b", side="BUY", price=0.45, size=11.1, order_id="o2", status="matched"),
+            LiveLegResult(token_id="tok_b", side="BUY", price=0.45, size=12.5, order_id="o2", status="matched"),
         ],
         client_ready=True,
         size_usd=10.0,
@@ -115,6 +117,8 @@ def test_execute_live_with_mocked_clob(tmp_path: Path, monkeypatch):
     assert res.status == "live_filled"
     assert store.get(oid)["state"] == OppState.FILLED.value
     assert store.count_fills_today() == 1
+    # A fill is not a settlement — realized PnL stays unresolved.
+    assert store.list_fills()[0]["realized_pnl"] is None
 
 
 def test_grok_analyze_mocked(tmp_path: Path, monkeypatch):

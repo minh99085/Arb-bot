@@ -4,7 +4,7 @@ from pathlib import Path
 
 from arb.config import ArbConfig
 from arb.dutch_book import ArbKind, Opportunity
-from arb.models import ExecMode, OppState
+from arb.models import ExecMode, OppState, SafetyMode
 from arb.state import OpportunityStore
 from arb.worker import ArbWorker, WorkerConfig
 
@@ -37,8 +37,11 @@ def test_worker_once_scan_and_reconcile(tmp_path: Path, monkeypatch):
 
 
 def test_worker_once_loop_paper(tmp_path: Path, monkeypatch):
+    # Explicit opt-in to paper execution (scanner/shadow-first defaults do not).
     cfg = ArbConfig(
         state_dir=tmp_path,
+        safety_mode=SafetyMode.PAPER_EXECUTION,
+        paper_execution_enabled=True,
         study_mode=False,
         exec_mode=ExecMode.PAPER,
         min_book_depth=1.0,
@@ -72,16 +75,27 @@ def test_worker_once_loop_paper(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(worker_mod, "run_scan", fake_scan)
     w = ArbWorker(cfg, wc)
     out = w.run_once(jobs=["loop"])
-    assert out["jobs"]["loop"]["traded"] >= 1
-    assert out["jobs"]["loop"]["realized_pnl"] != 0 or out["jobs"]["loop"]["traded"] >= 1
+    loop = out["jobs"]["loop"]
+    assert loop["traded"] >= 1
+    assert loop["executed"] is True
+    # No synthetic realization: the paper fill stays UNRESOLVED at 0 realized PnL.
+    assert loop["realized_pnl"] == 0
+    assert loop["unresolved"] >= 1
 
 
-def test_worker_gamma_fallback_trades(tmp_path: Path, monkeypatch):
+def test_worker_gamma_only_is_not_traded(tmp_path: Path, monkeypatch):
+    """Even with execution enabled, unverified gamma-only signals are never traded.
+
+    The old ``paper_gamma_fallback`` path (trading GAMMA_FLAG signals) is gone —
+    only CLOB_VERIFIED opportunities are eligible.
+    """
     cfg = ArbConfig(
         state_dir=tmp_path,
+        safety_mode=SafetyMode.PAPER_EXECUTION,
+        paper_execution_enabled=True,
         study_mode=False,
         exec_mode=ExecMode.PAPER,
-        paper_gamma_fallback=True,
+        paper_gamma_fallback=True,  # deliberately on — must be ignored
         paper_realistic=False,
         min_edge_bps=-30.0,
         min_book_depth=1.0,
@@ -96,7 +110,7 @@ def test_worker_gamma_fallback_trades(tmp_path: Path, monkeypatch):
         kind=ArbKind.BUY_BUNDLE,
         condition_id="0xgamma",
         slug="g",
-        question="Gamma fallback?",
+        question="Gamma only?",
         outcomes=["Yes", "No"],
         token_ids=["a", "b"],
         prices=[0.48, 0.48],
@@ -114,8 +128,13 @@ def test_worker_gamma_fallback_trades(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(worker_mod, "run_scan", fake_scan)
     w = ArbWorker(cfg, wc)
     out = w.run_once(jobs=["loop"])
-    assert out["jobs"]["loop"]["gamma_fallback"] is True
-    assert out["jobs"]["loop"]["traded"] >= 1
+    loop = out["jobs"]["loop"]
+    assert loop["traded"] == 0
+    assert "gamma_fallback" not in loop
+    # The gamma flag is still recorded (research signal), just not traded.
+    store = OpportunityStore(cfg.state_db)
+    assert store.count(state=OppState.GAMMA_FLAG) >= 1
+    assert store.count_fills_today() == 0
 
 
 def test_worker_run_forever_stops(tmp_path: Path, monkeypatch):

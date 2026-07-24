@@ -52,12 +52,21 @@ def test_self_tune_lowers_edge_when_quiet(tmp_path: Path, monkeypatch):
     assert "ARB_MIN_EDGE_BPS" in overrides
 
 
-def test_self_tune_tightens_on_losses(tmp_path: Path, monkeypatch):
+def test_self_tune_ignores_legacy_synthetic(tmp_path: Path, monkeypatch):
+    """Synthetic (auto-settled) realized results never drive tuning.
+
+    Old-style paper fills carrying realized_pnl are labeled LEGACY_SYNTHETIC and
+    must not cause position-size / activity changes (those rules are removed).
+    """
+    from arb.labels import Label, label_history
+
     monkeypatch.setenv("ARB_SELF_TUNE", "true")
     cfg = ArbConfig(
         state_dir=tmp_path,
-        min_edge_bps=10.0,
+        min_edge_bps=25.0,
         max_position_usd=20.0,
+        max_open_positions=10,
+        max_daily_trades=20,
         self_tune=True,
     )
     store = OpportunityStore(cfg.state_db)
@@ -75,10 +84,18 @@ def test_self_tune_tightens_on_losses(tmp_path: Path, monkeypatch):
             realized_pnl=-0.5,
         )
         store.transition(oid, OppState.CLOSED, reason="done")
+
+    # Those fills are legacy synthetic, never "paper losses".
+    labeled = label_history(store, days=30)
+    assert all(r.label == Label.LEGACY_SYNTHETIC for r in labeled)
+
     report = run_self_tune(cfg, store, days=30, force=True)
-    assert any(c.key == "ARB_MAX_POSITION_USD" for c in report.applied)
-    size = next(c for c in report.applied if c.key == "ARB_MAX_POSITION_USD")
-    assert size.new_value < size.old_value
+    # No size / open / daily-trade / activity tuning from synthetic outcomes.
+    tuned_keys = {c.key for c in report.applied}
+    assert "ARB_MAX_POSITION_USD" not in tuned_keys
+    assert "ARB_MAX_OPEN_POSITIONS" not in tuned_keys
+    assert "ARB_MAX_DAILY_TRADES" not in tuned_keys
+    assert "ARB_WORKER_TRADE_LIMIT" not in tuned_keys
 
 
 def test_apply_overrides_to_config(tmp_path: Path):

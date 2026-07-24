@@ -211,6 +211,16 @@ def execute_buy_bundle_live(
 
     Size per leg (shares) ≈ size_usd / n_outcomes / price.
     """
+    if opp.kind == ArbKind.SELL_BUNDLE:
+        return LiveBundleResult(
+            ok=False,
+            error=(
+                "UNSUPPORTED_STRATEGY: SELL_BUNDLE execution is disabled — no verified "
+                "inventory/collateral-split/common-quantity workflow yet."
+            ),
+            size_usd=size_usd,
+        )
+
     if not config.live_allowed():
         return LiveBundleResult(
             ok=False,
